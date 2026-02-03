@@ -7,7 +7,7 @@
 
 from pyb import Pin
 
-class Motor:
+class motor_driver:
 
     '''A motor driver interface encapsulated in a Python class. Works with
        motor drivers using separate PWM and direction inputs such as the DRV8838

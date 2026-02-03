@@ -1,0 +1,83 @@
+from motor_driver import motor_driver
+from encoder      import encoder
+from task_share   import Share, Queue
+from utime        import ticks_us, ticks_diff
+import micropython
+
+# controller.py
+import time
+
+class ClosedLoop:
+    """Simple P/PID controller. Outputs effort command."""
+
+    def __init__(self, Kp=0.0, Ki=0.0, Kd=0.0, sat=100):
+        self.Kp = Kp
+        self.Ki = Ki
+        self.Kd = Kd
+        self.sat = sat
+
+        self.integral = 0.0
+        self.prev_err = 0.0
+        self.prev_t = time.ticks_ms()
+
+    def set_gains(self, Kp=None, Ki=None, Kd=None):
+        if Kp is not None: self.Kp = Kp
+        if Ki is not None: self.Ki = Ki
+        if Kd is not None: self.Kd = Kd
+
+    def reset(self):
+        self.integral = 0.0
+        self.prev_err = 0.0
+        self.prev_t = time.ticks_ms()
+
+    def update(self, ref, meas):
+        """Return effort in [-sat, sat]."""
+        now = time.ticks_ms()
+        dt_ms = time.ticks_diff(now, self.prev_t)
+        self.prev_t = now
+        dt = dt_ms / 1000.0 if dt_ms > 0 else 0.0
+
+        err = ref - meas
+
+        # PID terms (Ki,Kd can be zero if you only want P)
+        if dt > 0:
+            self.integral += err * dt
+            derr = (err - self.prev_err) / dt
+        else:
+            derr = 0.0
+
+        self.prev_err = err
+
+        u = self.Kp*err + self.Ki*self.integral + self.Kd*derr
+
+        # Saturate
+        if u > self.sat:  u = self.sat
+        if u < -self.sat: u = -self.sat
+
+        return int(u)
+
+def task_control_fun(sh_enable, sh_setpoint, sh_Kp, sh_omega_meas, sh_effort,
+                     period_ms=10):
+    ctrl = ClosedLoop(Kp=0.0, Ki=0.0, Kd=0.0, sat=100)
+
+    enabled_last = False
+
+    while True:
+        enabled = sh_enable.get()
+
+        # rising edge: reset controller at start of step
+        if enabled and not enabled_last:
+            ctrl.reset()
+
+        enabled_last = enabled
+
+        if enabled:
+            ref = sh_setpoint.get()
+            meas = sh_omega_meas.get()
+            ctrl.set_gains(Kp=sh_Kp.get())
+            u = ctrl.update(ref, meas)
+            sh_effort.put(u)
+        else:
+            sh_effort.put(0)  # stop motor when not running
+
+        yield 0

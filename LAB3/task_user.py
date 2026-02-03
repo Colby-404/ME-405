@@ -2,7 +2,7 @@
     run method implemented as a generator
 '''
 from pyb import USB_VCP
-from task_share import Share
+from task_share import Share, Queue
 import micropython
 
 S0_INIT = micropython.const(0) # State 0 - initialiation
@@ -45,7 +45,7 @@ class task_user:
                                                  # collection from the right
                                                  # motor and encoder pair
         
-        self._ser: stream         = USB_VCP()    # A serial port object used to
+        self._ser = USB_VCP()           # A serial port object used to
                                                  # read character entry and to
                                                  # print output
         
