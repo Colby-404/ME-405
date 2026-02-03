@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+
+# PlatformIO / embedded build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Data/output files (common for labs)
+*.csv
+*.txt
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
+
