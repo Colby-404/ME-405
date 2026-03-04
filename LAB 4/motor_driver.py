@@ -1,9 +1,13 @@
 
-# Motor driver class for DRV8838-based motor drivers such as those on the Pololu Romi chassis.
+'''
+Motor driver class for DRV8838-based motor drivers such as those on the Pololu Romi chassis.
 
-# Assumes use of pyb module for Pin control.
+Assumes use of pyb module for Pin control.
 
-# Handles the pins and timer channels needed to operate the motor driver.
+Handles the pins and timer channels needed to operate the motor driver.
+
+motor driver takes in (PWM_channel, DIR_pin, nSLP_pin) and has methods set_effort(effort), enable(), and disable().
+'''
 
 from pyb import Pin
 

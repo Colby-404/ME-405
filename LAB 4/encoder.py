@@ -1,4 +1,11 @@
 
+'''
+ Quadrature encoder interface class.
+
+ Encoder takes in (timer, chA_pin, chB_pin) and has methods update(), get_position(), get_velocity(), and zero().
+
+ Uses hardware timer encoder mode and microsecond timing for high-resolution velocity estimation.
+'''
 import pyb
 from time import ticks_us, ticks_diff   # Use to get dt value in update()
 
@@ -75,7 +82,7 @@ class encoder:
         if self.dt == 0:
             return 0
         
-        return self.delta/self.dt
+        return (self.delta / self.dt) * 1e6   # counts/s
     
     def zero(self):
 
