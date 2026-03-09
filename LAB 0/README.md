@@ -21,6 +21,13 @@ From the measured step response, the time constant of the RC circuit was experim
 
 The experiment used the STM32 Nucleo-L476RG development board and a simple RC circuit constructed on a breadboard.
 
+### Protection Resistor
+
+A 5.6 kΩ resistor was placed between the RC circuit output and the ADC input.  
+This resistor protects the microcontroller in case the circuit is wired incorrectly or the pin is configured improperly.
+
+Because the input impedance of the ADC is very high, this resistor does not significantly affect the measured voltage during normal operation.
+
 ### Circuit Components
 
 | Component | Value |
@@ -89,6 +96,8 @@ The MicroPython program performs the following steps:
 ### ADC Sampling
 
 The capacitor voltage is measured using the MicroPython ADC class.
+
+The type code `'H'` represents an unsigned 16-bit integer, which is ideal for storing ADC readings because the STM32 ADC produces 12-bit values ranging from 0 to 4095.
 
 Example configuration:
 
