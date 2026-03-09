@@ -1,52 +1,101 @@
 # Hardware Description
 
-This document describes the hardware components used in the Romi robot platform for this project. The system consists of a line-following sensor array, bumper switches for collision detection, and an inertial measurement unit (IMU) for orientation sensing.
+This document describes the hardware components used in the Romi robot platform for this project. The system consists of a Romi mobile robot chassis controlled by an STM32 Nucleo microcontroller and equipped with several sensors for navigation and environment interaction.
 
 ---
 
 # System Overview
 
-The robot uses a **Romi chassis with an STM32 Nucleo microcontroller** to control motors and read sensor data. Several external sensors are used to provide environmental feedback and state estimation.
+The robot platform is based on the **Pololu Romi chassis** and is controlled using an **STM32 Nucleo-L476RG** microcontroller mounted on a **Shoe of Brian interface board**. The system includes sensors for line detection, collision detection, and orientation measurement.
 
-The main hardware components include:
+Primary hardware components include:
 
-- Reflectance sensor array for **line detection**
-- Bumper switches for **collision detection**
-- IMU for **orientation and motion sensing**
+- Romi chassis with motors and encoders
+- STM32 Nucleo-L476RG microcontroller
+- Shoe of Brian interface board
+- QTR reflectance sensor array
+- Bumper switches
+- BNO085 IMU
 
 ---
 
-# Line Following Sensor
+# Romi Robot Platform
+
+The Romi robot serves as the base mobile platform for the system.
+
+### Main Components
+
+- Romi chassis
+- Two DC motors
+- Wheel encoders
+- Wheels and caster
+- Power distribution board
+
+The Romi chassis provides both mechanical support and electrical power distribution to the system.
+
+The motors drive the robot while the **quadrature encoders measure wheel rotation**, allowing the software to determine wheel velocity and displacement.
+
+---
+
+# Microcontroller System
+
+## STM32 Nucleo-L476RG
+
+The Nucleo-L476RG microcontroller is used to control the robot and interface with sensors.
+
+It provides:
+
+- ADC inputs
+- digital I/O
+- PWM motor control
+- hardware timers
+- I2C communication for sensors
+
+The board runs **MicroPython firmware** and executes the robot control software.
+
+---
+
+# Shoe of Brian Interface Board
+
+The **Shoe of Brian** board connects the Nucleo to the Romi robot platform.
+
+It provides:
+
+- convenient breakout pins
+- power routing from the Romi battery
+- connectors for motors and encoders
+
+During assembly, the ferrite bead on the Shoe of Brian must be removed so that the Nucleo receives power from the Romi battery rather than USB power.
+
+The Nucleo and Shoe are stacked together using Morpho headers and mounted to the Romi chassis using standoffs.
+
+The assembly procedure follows the instructions provided in the Romi assembly guide. :contentReference[oaicite:4]{index=4}
+
+---
+
+# Line Detection Sensor
 
 ## QTR-MD-08A Reflectance Sensor Array
 
 Product link:  
 https://www.pololu.com/product/4248
 
-The **QTR-MD-08A** is an 8-channel infrared reflectance sensor array used to detect lines on the ground.
+The QTR-MD-08A is an 8-channel infrared reflectance sensor used for line detection.
 
-### Function
+### Operation
 
-Each sensor consists of an **IR LED and phototransistor pair**. The IR light reflects off the surface below the robot:
+Each sensor emits infrared light toward the surface below the robot.
 
-- **White surface → high reflection → higher analog output**
-- **Black line → low reflection → lower analog output**
+- White surfaces reflect more IR light
+- Dark surfaces reflect less IR light
 
-By reading all eight sensors, the robot can determine the **position of the line relative to the center of the robot**, allowing closed-loop line following control.
+The sensor outputs an **analog voltage proportional to the reflected light intensity**.
 
-### Key Features
+By reading all eight sensors simultaneously, the system can determine the position of a line relative to the robot.
 
-- 8 analog reflectance sensors
-- 8 mm spacing between sensors
-- Analog voltage output
-- Adjustable IR LED brightness
-- High sampling rate suitable for real-time control
+### Purpose
 
-### Typical Use
-
-The sensor array is mounted on the **front underside of the robot**, allowing it to detect the line before the robot passes over it.
-
-The eight analog outputs are connected to ADC-capable pins on the microcontroller.
+This sensor array enables **closed-loop line following control**.
 
 ---
 
@@ -54,35 +103,18 @@ The eight analog outputs are connected to ADC-capable pins on the microcontrolle
 
 ## Romi Bumper Switch Kit
 
-Product:  
-Bumper Switch Kit for Romi / TI-RSLK MAX
+The bumper switches detect collisions with obstacles.
 
-These switches detect when the robot physically contacts an obstacle.
-
-### Function
-
-Each bumper switch acts as a **digital input** to the microcontroller.
-
-When the robot collides with an object:
-
-- The bumper arm presses the switch
-- The switch closes
-- The microcontroller reads a **logic LOW or HIGH**, depending on wiring
-
-The robot software can then trigger a behavior such as:
-
-- stopping the motors
-- backing up
-- turning away from the obstacle
-
-### Configuration
-
-Two bumper switches are used:
+Two switches are mounted on the front of the robot:
 
 | Switch | Location |
 |------|------|
-| Left bumper | Left front side of robot |
-| Right bumper | Right front side of robot |
+| Left bumper | Left front of robot |
+| Right bumper | Right front of robot |
+
+When the robot hits an object, the switch closes and the microcontroller reads a digital signal indicating a collision.
+
+This allows the robot to stop or change direction.
 
 ---
 
@@ -90,59 +122,62 @@ Two bumper switches are used:
 
 ## BNO085 IMU
 
-The **BNO085** is a 9-axis inertial measurement unit that provides orientation and motion sensing.
+The robot uses a **BNO085 inertial measurement unit** to measure motion and orientation.
 
 ### Sensors Included
 
-The IMU integrates multiple sensors:
+The IMU contains:
 
 - 3-axis accelerometer
 - 3-axis gyroscope
 - 3-axis magnetometer
 
-These sensors allow the system to measure:
+### Sensor Fusion
+
+The onboard processor performs sensor fusion to estimate orientation.
+
+Typical outputs include:
 
 - angular velocity
 - acceleration
-- orientation
-- heading
-
-### Sensor Fusion
-
-The BNO085 includes an onboard processor that performs **sensor fusion**, combining raw sensor data to produce stable orientation estimates.
-
-Outputs may include:
-
-- Euler angles
+- orientation angles
 - quaternions
-- angular velocity
-- linear acceleration
 
 ### Communication
 
-The IMU communicates with the microcontroller using **I²C**.
+The IMU communicates with the microcontroller using **I2C**.
 
-Typical connections include:
+Example connections:
 
 | IMU Pin | MCU Pin | Function |
 |------|------|------|
-| SCL | PB13 | I²C Clock |
-| SDA | PB14 | I²C Data |
+| SCL | PB13 | I2C clock |
+| SDA | PB14 | I2C data |
 | VCC | 3.3V or 5V | Power |
 | GND | GND | Ground |
 
 ---
 
-# System Role of Each Sensor
+# Cabling
 
-| Sensor | Purpose |
-|------|------|
-| QTR Reflectance Array | Detect line position for line-following control |
-| Bumper Switches | Detect collisions with obstacles |
-| BNO085 IMU | Measure robot orientation and motion |
+The Romi platform requires several cable assemblies between the power distribution board and the Nucleo.
+
+These include:
+
+- motor control cables
+- encoder cables
+- power cable
+- IMU cable
+- sensor cables
+
+Each cable follows a specific pinout to ensure correct operation.
+
+Incorrect wiring can damage the Nucleo, so connections should always be verified before powering the system. :contentReference[oaicite:5]{index=5}
 
 ---
 
 # Summary
 
-This hardware configuration enables the robot to perceive its environment through multiple sensing modalities. The reflectance sensor array provides ground-based feedback for line tracking, the bumper switches provide physical collision detection, and the IMU provides orientation data used for motion estimation and advanced control strategies.
+The Romi robot platform combines a mobile chassis, microcontroller system, and multiple sensors to enable autonomous navigation.
+
+The reflectance sensor array provides line position feedback, the bumper switches detect collisions, and the IMU measures orientation and motion. Together these components allow the robot to perceive its environment and perform closed-loop control during operation.
