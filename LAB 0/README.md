@@ -1,7 +1,7 @@
 # ME 405 – Lab 0x00
 ## Interrupt Callbacks and ADC Reading
 
-Author: Colby Cordoba  
+Author: Colby Cordoba and Hobbs Hegedus   
 Course: ME 405 – Mechatronics  
 Institution: California Polytechnic State University, San Luis Obispo  
 
