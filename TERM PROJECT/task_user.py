@@ -1,8 +1,9 @@
 import micropython
 import pyb
 from pyb import USB_VCP
-from task_share import Share, Queue
+# from task_share import Share, Queue
 
+'''
 # ---------------- FSM States for data UI ----------------
 S0_INIT = micropython.const(0)
 S1_CMD  = micropython.const(1)
@@ -16,8 +17,9 @@ MODE_R    = micropython.const(2)
 MODE_BOTH = micropython.const(3)
 
 UI_prompt = ">: "
+'''
 
-
+'''
 class task_user:
     # Data-collection UI task (runs only when start_user == 1)
 
@@ -299,6 +301,7 @@ class task_user:
 
             yield
 
+'''
 
 class task_tuning_ui:
     # Tuning menu UI task (runs only when start_user == 0)
@@ -363,6 +366,13 @@ class task_tuning_ui:
         self._stream_end_ms = 0
         self._stream_next_ms = 0
         self._stream_period_ms = 50
+
+        # USER button on Nucleo board (B1 = PC13)
+        try:
+            self._user_btn = pyb.Pin('PC13', pyb.Pin.IN)
+        except Exception:
+            self._user_btn = None
+        self._user_btn_prev = 1
 
     def print_help(self):
         # Lazy import to save RAM at startup
@@ -435,6 +445,45 @@ class task_tuning_ui:
         self._stream_next_ms = now
         self._ui_mode = "SENSE_STREAM"
 
+    def _run_line_follow_from_button(self):
+        s = self._ser
+        s.write(b"n\r\n")
+
+        if self._leftMotorGo is None or self._rightMotorGo is None:
+            s.write(b"Motor Go shares not wired in main.py\r\n>: ")
+            return
+
+        if self._follow_en is not None:
+            self._follow_en.put(1)
+
+        self._leftMotorGo.put(1)
+        self._rightMotorGo.put(1)
+
+        if self._Kp_line is not None and self._Ki_line is not None:
+            s.write(("Kp_line:   {}\r\n".format(self._Kp_line.get())).encode())
+            s.write(("Ki_line:   {}\r\n".format(self._Ki_line.get())).encode())
+
+        s.write(b"Motors RUNNING (LINE-FOLLOW MODE). Streaming line status...\r\n")
+        self._start_stream(3600000)
+
+    def _stop_line_follow_from_button(self):
+        s = self._ser
+        s.write(b"x\r\n")
+
+        if self._leftMotorGo is None or self._rightMotorGo is None:
+            s.write(b"Motor Go shares not wired in main.py\r\n>: ")
+            self._ui_mode = "CMD"
+            return
+
+        self._leftMotorGo.put(0)
+        self._rightMotorGo.put(0)
+
+        if self._follow_en is not None:
+            self._follow_en.put(0)
+
+        self._ui_mode = "CMD"
+        s.write(b"Motors stopped.\r\n>: ")
+
     def _cancel_cal(self):
         s = self._ser
         self._cal_armed = False
@@ -470,6 +519,41 @@ class task_tuning_ui:
 
         if self._start_user.get() != 0:
             return
+            
+       # USER button press toggles start/stop
+        if self._user_btn is not None:
+            try:
+                btn_now = self._user_btn.value()
+
+                # Detect button press edge (active-low: 1 -> 0)
+                if self._user_btn_prev == 1 and btn_now == 0:
+                    left_running = False
+                    right_running = False
+
+                    if self._leftMotorGo is not None:
+                        try:
+                            left_running = bool(self._leftMotorGo.get())
+                        except Exception:
+                            left_running = False
+
+                    if self._rightMotorGo is not None:
+                        try:
+                            right_running = bool(self._rightMotorGo.get())
+                        except Exception:
+                            right_running = False
+
+                    if left_running or right_running or self._ui_mode == "SENSE_STREAM":
+                        self._stop_line_follow_from_button()
+                    else:
+                        self._run_line_follow_from_button()
+
+                    self._user_btn_prev = btn_now
+                    return
+
+                self._user_btn_prev = btn_now
+
+            except Exception:
+                pass
 
         if self._ui_mode == "CMD":
             if s.any():
@@ -493,10 +577,11 @@ class task_tuning_ui:
                     s.write(b"\r\n")
                     self._ui_mode = "GET_SP"
 
-                elif c == "g":
-                    s.write(b"\r\nStarting data-collection UI...\r\n")
-                    self._start_user.put(1)
-
+                    '''
+                    elif c == "g":
+                        s.write(b"\r\nStarting data-collection UI...\r\n")
+                        self._start_user.put(1)
+                    '''
                 elif c == "n":
                     s.write(b"\r\n")
                     if self._leftMotorGo is None or self._rightMotorGo is None:
@@ -587,8 +672,8 @@ class task_tuning_ui:
                         self._cal_done.put(0)
                     s.write(b"Calibration ARMED:\r\n")
                     s.write(b"  w = calibrate WHITE\r\n")
-                    s.write(b"  b = calibrate BLACK\r\n")
-                    s.write(b"  a = cancel/disarm\r\n")
+                    s.write(b"  b = calibrate BLACK (do FIRST)\r\n")
+                    s.write(b"  a = cancel calibration/disarm\r\n")
                     s.write(b">: ")
 
                 elif c == "w":
@@ -606,9 +691,11 @@ class task_tuning_ui:
                 elif c == "p":
                     self._print_line_status()
 
-                elif c == "q":
-                    s.write(b"\r\nStreaming line status for 3 seconds (press any key to stop)...\r\n")
-                    self._start_stream(3000)
+                    '''
+                    elif c == "q":
+                        s.write(b"\r\nStreaming line status for 3 seconds (press any key to stop)...\r\n")
+                        self._start_stream(3000)
+                    '''
 
                 elif cmd == "\r" or cmd == "\n":
                     s.write(b"\r\n>: ")

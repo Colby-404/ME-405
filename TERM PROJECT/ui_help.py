@@ -7,20 +7,25 @@ def print_help(s):
     s.write(b"| h | Help menu                                                                |\r\n")
     s.write(b"| k | Enter wheel gains (Kp, Ki)                                               |\r\n")
     s.write(b"| s | Set V_nom (forward speed setpoint)                                       |\r\n")
-    s.write(b"| g | Data Collection UI                                                       |\r\n")
     s.write(b"+------------------------------------------------------------------------------+\r\n")
-    s.write(b"| n | Run motors (line-follow + stream to PC)                                  |\r\n")
-    s.write(b"| x | Stop motors (also stops stream)                                          |\r\n")
-    s.write(b"| f | Toggle line follow enable                                                |\r\n")
-    s.write(b"| o | Enter line-follow gains (Kp_line, Ki_line)                               |\r\n")
     s.write(b"| c | Arm calibration (w=white, b=black, a=cancel)                             |\r\n")
+    s.write(b"| o | Enter line-follow gains (Kp_line, Ki_line)                               |\r\n")
+    s.write(b"| n | Run motors (line-follow + stream to PC with IMU data)                    |\r\n")
+    s.write(b"| x | Stop motors (also stops stream)                                          |\r\n")
     s.write(b"+------------------------------------------------------------------------------+\r\n")
     s.write(b"| p | Print line + IMU status (err, dv, follow, heading, yawrate, calib)       |\r\n")
-    s.write(b"| q | Stream line + IMU status for 3 seconds                                   |\r\n")
-    s.write(b"| i | Toggle IMU enable (imu_en)                                               |\r\n")
-    s.write(b"| m | Toggle IMU fusion mode (IMUPLUS <-> NDOF)                                |\r\n")
-    s.write(b"| z | Zero IMU heading (sets current heading to 0)                             |\r\n")
+    s.write(b"| f | Toggle line follow enable                                                |\r\n")  
+    s.write(b"| i | Toggle IMU enable (imu_en)                                               |\r\n") 
+    s.write(b"| m | Toggle IMU fusion mode (IMUPLUS<-> NDOF)                                 |\r\n") 
+    s.write(b"| z | Zero IMU heading (sets current heading to 0)                             |\r\n") 
     s.write(b"| u | Save IMU calibration profile to bno055_calib.bin                         |\r\n")
+
+    # NEED to make it so line not okay does not imediately trigger event or add specifc line not okay error because as it is now it is simply just doing it everytime line not okay. 
+    # Bump sensor ISR that does a 200 and enables line following again 
+    # forwords
+    # When line lost it then goes forwords and 360 to knock off cup then comes back and enables follow line again
+    # Program stops when encoder reach a specific rotation. 
+
     s.write(b"+---+--------------------------------------------------------------------------+\r\n")
     s.write(b"\r\n>: ")
     pyb.delay(10)

@@ -9,7 +9,10 @@ gc.collect()
 
 # ---- Low-RAM import order ----
 # Import the largest modules first while the heap is clean, and GC between imports.
-from task_user import task_user, task_tuning_ui
+
+# Original import kept here for later if you want to restore the old data-collection UI:
+# from task_user import task_user, task_tuning_ui
+from task_user import task_tuning_ui
 gc.collect()
 
 from motor_driver import motor_driver
@@ -116,6 +119,8 @@ posR = Share("l", name="Pos R")
 effortL = Share("h", name="Left Effort")
 effortR = Share("h", name="Right Effort")
 
+# Kept for compatibility with the current task_tuning_ui implementation.
+# Old data-collection UI used this to switch menus.
 start_user = Share("B", name="Start User Task")
 
 # Outer-loop (line-follow) shares
@@ -152,11 +157,11 @@ motorRGo.put(0)
 Kp.put(0.09)
 Ki.put(0.0)
 
-v_nom.put(1000.0)
+v_nom.put(800.0)
 setpointL.put(v_nom.get())
 setpointR.put(v_nom.get())
 
-follow_en.put(0)
+follow_en.put(1)
 Kp_line.put(0.7)
 Ki_line.put(0.0)
 
@@ -184,6 +189,8 @@ imu_calraw.put(0)
 # -----------------------------
 # Queues (wheel logging)
 # -----------------------------
+# Kept for now because task_motor may still expect these buffers.
+# If you later confirm task_motor does not need them, these are a good place to save RAM.
 dataValuesL = Queue("f", 100, name="Left Data Buffer")
 timeValuesL = Queue("L", 100, name="Left Time Buffer")
 
@@ -313,9 +320,49 @@ followTask = task_follow_line(
     dv_out=dv_out,
     sat_dv=600.0,
     period_ms=50,
-    line_ok=None,
+    line_ok=line_ok,
     sp_min=-3000.0,
-    sp_max=3000.0
+    sp_max=3000.0,
+
+    heading_deg=imu_heading,
+    posL_meas=posL,
+    posR_meas=posR,
+    use_line_recovery=True,
+
+    # First scripted section:
+    #   Robot drives forward this many encoder counts after the first line loss
+    #   before starting the 90-degree right turn.
+    lost_forward_counts=150.0,
+
+    # First scripted section:
+    #   Right-turn angle in degrees for the first special maneuver.
+    turn_right_deg=90.0,
+
+    # Second scripted section:
+    #   Robot drives forward this many encoder counts before beginning the 360.
+    stage1_forward1_counts=150.0,
+
+    # Second scripted section:
+    #   Half-turn angle used twice to make a full 360 (180 + 180).
+    stage1_turn_half_deg=180.0,
+
+    # Second scripted section:
+    #   Robot drives forward this many encoder counts after the 360
+    #   before continuing straight until the line is found again.
+    stage1_forward2_counts=150.0,
+
+    # Shared recovery tuning:
+    #   Allowed heading error band in degrees when deciding a turn is complete.
+    heading_tol_deg=3.0,
+
+    # Shared recovery tuning:
+    #   Forward speed used during scripted recovery.
+    #   If set to None, recovery uses the current v_nom value instead.
+    recovery_fwd_speed=700.0,
+
+    # Shared recovery tuning:
+    #   Turn speed used during scripted recovery turns.
+    recovery_turn_speed=450.0
 )
 
 # -----------------------------
@@ -343,22 +390,23 @@ tuningTask = task_tuning_ui(
     imu_save_cmd=imu_save_cmd,
 )
 
-userTask = task_user(
-    start_user,
-    motorLGo, motorRGo,
-    dataValuesL, timeValuesL,
-    dataValuesR, timeValuesR,
-    v_nom, Kp, Ki,
-    ser,
-    follow_en=follow_en,
-    Kp_line=Kp_line,
-    Ki_line=Ki_line,
-    line_err=line_err,
-    dv_out=dv_out,
-    imu_heading=imu_heading,
-    imu_yawrate=imu_yawrate,
-    imu_calraw=imu_calraw,
-)
+# Old data-collection UI task kept commented out for later restore.
+# userTask = task_user(
+#     start_user,
+#     motorLGo, motorRGo,
+#     dataValuesL, timeValuesL,
+#     dataValuesR, timeValuesR,
+#     v_nom, Kp, Ki,
+#     ser,
+#     follow_en=follow_en,
+#     Kp_line=Kp_line,
+#     Ki_line=Ki_line,
+#     line_err=line_err,
+#     dv_out=dv_out,
+#     imu_heading=imu_heading,
+#     imu_yawrate=imu_yawrate,
+#     imu_calraw=imu_calraw,
+# )
 
 # -----------------------------
 # Scheduler
@@ -372,7 +420,9 @@ task_list.append(Task(followTask.run,     name="Line Follow",   priority=3, peri
 task_list.append(Task(imuTask.run,        name="IMU",           priority=2, period=20))
 
 task_list.append(Task(tuningTask.run,     name="Tuning UI",     priority=0, period=50))
-task_list.append(Task(userTask.run,       name="User",          priority=0, period=50))
+
+# Old data-collection UI task kept commented out for later restore.
+# task_list.append(Task(userTask.run,       name="User",          priority=0, period=50))
 
 # -----------------------------
 # RUN
