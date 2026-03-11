@@ -1,23 +1,29 @@
 """
-step_collector_loop.py (Lab 0x05 - Line Follow Logger)
+step_collector_loop.py (Lab 0x05 - Line Follow + Estimator Logger)
 
-Replaces the old step-response collector.
-This script logs LINE FOLLOW performance as:
-  line_err vs time
-  dv_out vs time
+This script logs streamed values from your firmware tuning UI.
+
+Primary (always parsed if present):
+  - line_err vs time
+  - dv_out   vs time
+
+Optional (parsed if your firmware stream includes them):
+  - xhat_wL, xhat_wR, xhat_s, xhat_psi
+  - x_pos, y_pos, dist
 
 Assumes your UPDATED firmware tuning UI supports:
   - 'h' help
-  - 'c' calibration wizard (then 'w' for white, 'b' for black, 'q' quit)
   - 'f' toggle follow_en
   - 'o' set Kp_line / Ki_line
-  - 'p' print line status including:
-        follow_en: <0/1>
-        line_err:  <number>
-        dv_out:    <number>
+  - 'n' run motors + stream line status indefinitely (stop with 'x')
+  - 'x' stop motors/stream
+  - 'p' print line status (for sanity checks)
 
-It does NOT require entering the data-collection UI ('g').
+Notes:
+  - If your firmware stream includes estimator fields, they will be logged into the CSV
+    and extra plots (pose path, heading, distance) will be saved.
 """
+
 
 import os
 import time
@@ -33,16 +39,37 @@ import numpy as np
 
 
 # ------------------------- User Settings -------------------------
-PORT = "COM6"
+PORT = "COM9"
 BAUD = 115200
 TIMEOUT_S = 0.15
 
 LOG_DIR = "Collection Log"
 DEBUG = True
 
+
+# Enable verbose streaming on the device before starting 'n' stream.
+# This makes the firmware append posL/posR and yhat_* fields to each streamed line.
+AUTO_VERBOSE_STREAM = True
 DURATION_S = 9999.0      # not used for streamed 'n' mode; placeholder
 SAMPLE_HZ  = 25.0        # nominal parse loop rate (used for sleep)
-DO_CALIBRATION = False   # run wizard 'c' -> 'w' -> 'b' -> 'q' on startup
+
+# --- Startup behavior ---
+# The previous version of this script always sent 'n' immediately, which starts
+# the motors. For labs where you must calibrate the line sensor first, keep this
+# False so you can calibrate before the robot moves.
+AUTO_START_MOTORS = False
+
+# Interactive calibration wizard.
+# Default key sequence assumes your firmware UI uses: 'c' (cal menu), 'w' (white),
+# 'b' (black), 'q' (quit). If your UI uses different keys, change these.
+DO_CALIBRATION = True
+CAL_KEYS = {
+    "menu": "c",
+    "white": "w",
+    "black": "b",
+    "quit": "q",
+}
+
 ENABLE_FOLLOW = True     # toggle follow_en to 1 if it's 0 on startup
 SET_LINE_GAINS = False   # set True if you want the script to set Kp_line/Ki_line
 KPLINE = 0.20
@@ -179,6 +206,31 @@ _re_dv     = re.compile(r"\bdv(?:_?out)?\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
 _re_kpl    = re.compile(r"Kp_line:\s*([-+0-9.eE]+)", re.IGNORECASE)
 _re_kil    = re.compile(r"Ki_line:\s*([-+0-9.eE]+)", re.IGNORECASE)
 
+# --- State estimator (optional) ---
+_re_xhat_wL  = re.compile(r"\bxhat_(?:wL|omegaL)\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_xhat_wR  = re.compile(r"\bxhat_(?:wR|omegaR)\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_xhat_s   = re.compile(r"\bxhat_s\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_xhat_psi = re.compile(r"\bxhat_psi\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+
+# Pose keys (new firmware uses x_pos/y_pos; keep x/y for backwards compatibility)
+_re_xpos     = re.compile(r"\b(?:x_pos|x)\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_ypos     = re.compile(r"\b(?:y_pos|y)\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_dist     = re.compile(r"\bdist(?:_traveled)?\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+
+# --- IMU (optional; included in LINE stream) ---
+_re_hdg      = re.compile(r"\bhdg\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_wz       = re.compile(r"\bwz\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+
+# --- Encoders (optional; only present when verbose_stream=1) ---
+_re_posL     = re.compile(r"\bposL\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_posR     = re.compile(r"\bposR\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+
+# --- Estimated outputs yhat_* (optional; only present when verbose_stream=1 OR EST stream) ---
+_re_yhat_sL     = re.compile(r"\byhat_sL\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_yhat_sR     = re.compile(r"\byhat_sR\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_yhat_psi    = re.compile(r"\byhat_psi\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+_re_yhat_psidot = re.compile(r"\byhat_psidot\s*[:=]\s*([-+0-9.eE]+)", re.IGNORECASE)
+
 # Extract per-line samples robustly
 _re_line_sample = re.compile(r".*", re.DOTALL)
 
@@ -209,6 +261,70 @@ def parse_line_status(text: str):
     m = _re_kil.search(text)
     if m:
         out["Ki_line"] = float(m.group(1))
+
+        # --- State estimator (optional) ---
+    m = _re_xhat_wL.search(text)
+    if m:
+        out["xhat_wL"] = float(m.group(1))
+
+    m = _re_xhat_wR.search(text)
+    if m:
+        out["xhat_wR"] = float(m.group(1))
+
+    m = _re_xhat_s.search(text)
+    if m:
+        out["xhat_s"] = float(m.group(1))
+
+    m = _re_xhat_psi.search(text)
+    if m:
+        out["xhat_psi"] = float(m.group(1))
+
+    m = _re_xpos.search(text)
+    if m:
+        out["x_pos"] = float(m.group(1))
+
+    m = _re_ypos.search(text)
+    if m:
+        out["y_pos"] = float(m.group(1))
+
+    m = _re_dist.search(text)
+    if m:
+        out["dist"] = float(m.group(1))
+
+    # IMU (if present)
+    m = _re_hdg.search(text)
+    if m:
+        out["hdg"] = float(m.group(1))
+
+    m = _re_wz.search(text)
+    if m:
+        out["wz"] = float(m.group(1))
+
+    # Encoders (verbose stream)
+    m = _re_posL.search(text)
+    if m:
+        out["posL"] = float(m.group(1))
+
+    m = _re_posR.search(text)
+    if m:
+        out["posR"] = float(m.group(1))
+
+    # yhat_* (verbose stream or EST stream)
+    m = _re_yhat_sL.search(text)
+    if m:
+        out["yhat_sL"] = float(m.group(1))
+
+    m = _re_yhat_sR.search(text)
+    if m:
+        out["yhat_sR"] = float(m.group(1))
+
+    m = _re_yhat_psi.search(text)
+    if m:
+        out["yhat_psi"] = float(m.group(1))
+
+    m = _re_yhat_psidot.search(text)
+    if m:
+        out["yhat_psidot"] = float(m.group(1))
 
     return out
 
@@ -249,23 +365,107 @@ def ensure_follow_enabled(ser: serial.Serial) -> None:
         print("follow_en already enabled.")
 
 
+def run_calibration_interactive(ser: serial.Serial) -> None:
+    """Interactive line-sensor calibration (white then black).
+
+    This DOES NOT start motors. It simply sends the UI keystrokes in CAL_KEYS,
+    pausing so you can move the robot between surfaces.
+
+    If your firmware uses different keys, edit CAL_KEYS near the top of the file.
+    """
+    print("\n--- Line Sensor Calibration ---")
+    print("This script will guide you through calibration BEFORE starting motors.")
+    print("If your UI prompts/keys differ, edit CAL_KEYS in this script.\n")
+
+    # Make sure we're at a prompt and motors are stopped
+    try:
+        send_key(ser, "x")
+        read_until_any(ser, needles=[">:"], max_wait_s=2.0)
+    except Exception:
+        pass
+
+    try:
+        sync_to_tuning_ui(ser)
+    except Exception:
+        pass
+
+    # Enter calibration menu (if your UI doesn't need this, set CAL_KEYS['menu'] = '' )
+    menu_key = (CAL_KEYS.get("menu") or "")[:1]
+    if menu_key:
+        print(f"Entering calibration menu: sending '{menu_key}'")
+        send_key(ser, menu_key)
+        read_until_any(ser, needles=[">:"], max_wait_s=4.0)
+
+    # White calibration
+    input("Place the line sensor on WHITE background, then press Enter...")
+    w_key = (CAL_KEYS.get("white") or "")[:1]
+    if not w_key:
+        raise RuntimeError("CAL_KEYS['white'] is empty; cannot calibrate white.")
+    print(f"Calibrating WHITE: sending '{w_key}'")
+    send_key(ser, w_key)
+    read_until_any(ser, needles=[">:"], max_wait_s=8.0)
+
+    # Black calibration
+    input("Place the line sensor on BLACK line, then press Enter...")
+    b_key = (CAL_KEYS.get("black") or "")[:1]
+    if not b_key:
+        raise RuntimeError("CAL_KEYS['black'] is empty; cannot calibrate black.")
+    print(f"Calibrating BLACK: sending '{b_key}'")
+    send_key(ser, b_key)
+    read_until_any(ser, needles=[">:"], max_wait_s=8.0)
+
+    # Quit calibration menu
+    q_key = (CAL_KEYS.get("quit") or "")[:1]
+    if q_key:
+        print(f"Exiting calibration menu: sending '{q_key}'")
+        send_key(ser, q_key)
+        read_until_any(ser, needles=[">:"], max_wait_s=4.0)
+
+    print("Calibration complete.\n")
+
+
 # ------------------------- Output -------------------------
 
-def save_csv(path: str, t_s, err, dv, meta=None):
+def save_csv(path: str, t_s, err, dv,
+             hdg=None, wz=None,
+             xhat_s=None, xhat_psi=None, x_pos=None, y_pos=None, dist=None,
+             posL=None, posR=None,
+             yhat_sL=None, yhat_sR=None, yhat_psi=None, yhat_psidot=None,
+             meta=None):
+    """Save a CSV. Optional arrays may be None."""
+    hdg      = hdg      if hdg      is not None else [float('nan')] * len(t_s)
+    wz       = wz       if wz       is not None else [float('nan')] * len(t_s)
+    xhat_s   = xhat_s   if xhat_s   is not None else [float('nan')] * len(t_s)
+    xhat_psi = xhat_psi if xhat_psi is not None else [float('nan')] * len(t_s)
+    x_pos    = x_pos    if x_pos    is not None else [float('nan')] * len(t_s)
+    y_pos    = y_pos    if y_pos    is not None else [float('nan')] * len(t_s)
+    dist     = dist     if dist     is not None else [float('nan')] * len(t_s)
+    posL     = posL     if posL     is not None else [float('nan')] * len(t_s)
+    posR     = posR     if posR     is not None else [float('nan')] * len(t_s)
+    yhat_sL     = yhat_sL     if yhat_sL     is not None else [float('nan')] * len(t_s)
+    yhat_sR     = yhat_sR     if yhat_sR     is not None else [float('nan')] * len(t_s)
+    yhat_psi    = yhat_psi    if yhat_psi    is not None else [float('nan')] * len(t_s)
+    yhat_psidot = yhat_psidot if yhat_psidot is not None else [float('nan')] * len(t_s)
+
     with open(path, "w", encoding="utf-8") as f:
         if meta is not None:
             f.write(f"# Kp_line={meta.get('Kp_line', 'N/A')}, Ki_line={meta.get('Ki_line', 'N/A')}\n")
-        f.write("Time [s],line_err [QTR units],dv_out [counts/s]\n")
-        for t, e, d in zip(t_s, err, dv):
-            f.write(f"{t:.6f},{e:.6f},{d:.6f}\n")
+        f.write("Time [s],line_err [QTR units],dv_out [counts/s],hdg [deg],wz [deg/s],xhat_s [mm],xhat_psi [rad],x_pos [mm],y_pos [mm],dist [mm],posL [counts],posR [counts],yhat_sL [mm],yhat_sR [mm],yhat_psi [rad],yhat_psidot [rad/s]\n")
+        for t, e, d, h, wz_i, xs, xp, x, y, di, pL, pR, ysL, ysR, ypsi, ypdot in zip(
+            t_s, err, dv, hdg, wz, xhat_s, xhat_psi, x_pos, y_pos, dist, posL, posR, yhat_sL, yhat_sR, yhat_psi, yhat_psidot
+        ):
+            f.write(f"{t:.6f},{e:.6f},{d:.6f},{h:.6f},{wz_i:.6f},{xs:.6f},{xp:.6f},{x:.6f},{y:.6f},{di:.6f},{pL:.0f},{pR:.0f},{ysL:.6f},{ysR:.6f},{ypsi:.6f},{ypdot:.6f}\n")
 
 
-def save_plot(path: str, t_s, err, dv, meta=None):
-
+def save_plot(path: str, t_s, err, dv, xhat_psi=None, x_pos=None, y_pos=None, dist=None, meta=None):
+    """Save standard plots (line_err, dv_out) and optional estimator plots."""
     title_suffix = ""
     if meta is not None:
         title_suffix = f"\nKp_line={meta.get('Kp_line','N/A')}  Ki_line={meta.get('Ki_line','N/A')}"
 
+    out_paths = []
+
+    # line_err vs time
     plt.figure()
     plt.plot(t_s, err, label="line_err (centroid error)")
     plt.grid(True)
@@ -275,8 +475,10 @@ def save_plot(path: str, t_s, err, dv, meta=None):
     plt.legend(loc="best")
     plt.savefig(path, dpi=200, bbox_inches="tight")
     plt.close()
+    out_paths.append(path)
 
-    path2 = path.replace(".png", "_dv.png")
+    # dv_out vs time
+    path_dv = path.replace(".png", "_dv.png")
     plt.figure()
     plt.plot(t_s, dv, label="dv_out (steering correction)")
     plt.grid(True)
@@ -284,9 +486,58 @@ def save_plot(path: str, t_s, err, dv, meta=None):
     plt.ylabel("dv_out [counts/s]")
     plt.title("Line Following Control Effort (dv_out vs time)" + title_suffix)
     plt.legend(loc="best")
-    plt.savefig(path2, dpi=200, bbox_inches="tight")
+    plt.savefig(path_dv, dpi=200, bbox_inches="tight")
     plt.close()
-    return path2
+    out_paths.append(path_dv)
+
+    # Optional estimator plots
+    def _has_finite(arr):
+        try:
+            return np.isfinite(np.asarray(arr, dtype=float)).any()
+        except Exception:
+            return False
+
+    if xhat_psi is not None and _has_finite(xhat_psi):
+        path_psi = path.replace(".png", "_psi.png")
+        plt.figure()
+        plt.plot(t_s, xhat_psi, label="xhat_psi (heading)")
+        plt.grid(True)
+        plt.xlabel("Time [s]")
+        plt.ylabel("xhat_psi [rad]")
+        plt.title("Estimated Heading (xhat_psi vs time)" + title_suffix)
+        plt.legend(loc="best")
+        plt.savefig(path_psi, dpi=200, bbox_inches="tight")
+        plt.close()
+        out_paths.append(path_psi)
+
+    if dist is not None and _has_finite(dist):
+        path_dist = path.replace(".png", "_dist.png")
+        plt.figure()
+        plt.plot(t_s, dist, label="dist (mm)")
+        plt.grid(True)
+        plt.xlabel("Time [s]")
+        plt.ylabel("dist [mm]")
+        plt.title("Estimated Distance (dist vs time)" + title_suffix)
+        plt.legend(loc="best")
+        plt.savefig(path_dist, dpi=200, bbox_inches="tight")
+        plt.close()
+        out_paths.append(path_dist)
+
+    if x_pos is not None and y_pos is not None and _has_finite(x_pos) and _has_finite(y_pos):
+        path_xy = path.replace(".png", "_xy.png")
+        plt.figure()
+        plt.plot(x_pos, y_pos, label="(x_pos, y_pos)")
+        plt.grid(True)
+        plt.xlabel("x_pos [mm]")
+        plt.ylabel("y_pos [mm]")
+        plt.title("Estimated Path (x-y)" + title_suffix)
+        plt.legend(loc="best")
+        plt.axis("equal")
+        plt.savefig(path_xy, dpi=200, bbox_inches="tight")
+        plt.close()
+        out_paths.append(path_xy)
+
+    return out_paths
 
 
 # ------------------------- Serial open / reconnect -------------------------
@@ -356,6 +607,24 @@ def main():
             except Exception as e:
                 print("WARNING: ensure_follow_enabled failed:", e)
 
+        if DO_CALIBRATION:
+            try:
+                run_calibration_interactive(ser)
+            except Exception as e:
+                print("WARNING: calibration wizard failed:", e)
+                print("You can still calibrate manually in the tuning UI, then re-run this script.")
+
+        # Optionally enable verbose streaming so we also get posL/posR and yhat_* fields.
+        if AUTO_VERBOSE_STREAM:
+            print("Enabling verbose stream on device: sending 'v'")
+            send_key(ser, "v")
+            # wait for prompt
+            read_until_any(ser, needles=[">:"], max_wait_s=4.0)
+            time.sleep(0.05)
+
+        if not AUTO_START_MOTORS:
+            input("Ready. Press Enter to START motors + stream (sends 'n')...")
+
         print("Starting motors + stream: sending 'n' to device.")
         send_key(ser, "n")
         time.sleep(0.1)
@@ -363,10 +632,31 @@ def main():
         times = []
         errs = []
         dvs = []
+        xhat_s = []
+        xhat_psi = []
+        x_pos = []
+        y_pos = []
+        dist = []
+        hdg = []
+        wz = []
+        posL = []
+        posR = []
+        yhat_sL = []
+        yhat_sR = []
+        yhat_psi = []
+        yhat_psidot = []
         raw_blocks = []
 
         meta = {}
-        last_dv = float("nan")
+        last_vals = {
+            "dv_out": float("nan"),
+            "line_err": float("nan"),
+            "xhat_s": float("nan"),
+            "xhat_psi": float("nan"),
+            "x_pos": float("nan"),
+            "y_pos": float("nan"),
+            "dist": float("nan"),
+        }
 
         kb = KeyboardStopWatcher()
         t0 = time.time()
@@ -407,15 +697,32 @@ def main():
                     buf = lines[-1]
                     for line in lines[:-1]:
                         d = parse_line_status(line)
+                        if not d:
+                            continue
 
-                        if "dv_out" in d:
-                            last_dv = d["dv_out"]
+                        # Update last-known values
+                        for k, v in d.items():
+                            last_vals[k] = v
 
-                        if "line_err" in d:
+                        # Record a sample whenever we see a streamed measurement
+                        if any(k in d for k in ("line_err", "xhat_s", "x_pos", "dist")):
                             t_rel = time.time() - t0
                             times.append(t_rel)
-                            errs.append(d["line_err"])
-                            dvs.append(last_dv)
+                            errs.append(last_vals.get("line_err", float("nan")))
+                            dvs.append(last_vals.get("dv_out", float("nan")))
+                            xhat_s.append(last_vals.get("xhat_s", float("nan")))
+                            xhat_psi.append(last_vals.get("xhat_psi", float("nan")))
+                            x_pos.append(last_vals.get("x_pos", float("nan")))
+                            y_pos.append(last_vals.get("y_pos", float("nan")))
+                            dist.append(last_vals.get("dist", float("nan")))
+                            hdg.append(last_vals.get("hdg", float("nan")))
+                            wz.append(last_vals.get("wz", float("nan")))
+                            posL.append(last_vals.get("posL", float("nan")))
+                            posR.append(last_vals.get("posR", float("nan")))
+                            yhat_sL.append(last_vals.get("yhat_sL", float("nan")))
+                            yhat_sR.append(last_vals.get("yhat_sR", float("nan")))
+                            yhat_psi.append(last_vals.get("yhat_psi", float("nan")))
+                            yhat_psidot.append(last_vals.get("yhat_psidot", float("nan")))
 
                 else:
                     time.sleep(1.0 / max(1.0, SAMPLE_HZ))
@@ -440,12 +747,41 @@ def main():
 
         print("Samples collected:", len(times))
         if len(times) > 0:
-            print("First sample:", times[0], errs[0], dvs[0])
+            print("First sample:", times[0], errs[0], dvs[0], xhat_s[0], x_pos[0], y_pos[0])
 
-        save_csv(csv_path, times, errs, dvs, meta=meta)
-        dv_png = save_plot(png_path, times, errs, dvs, meta=meta)
+        # Quick sanity check: does the estimated (x_pos, y_pos) look like a circle?
+        # We do a simple least-squares circle fit (Kasa) and print radius + RMS radial error.
+        try:
+            xs = np.asarray(x_pos, dtype=float)
+            ys = np.asarray(y_pos, dtype=float)
+            m = np.isfinite(xs) & np.isfinite(ys)
+            if m.sum() >= 10:
+                A = np.c_[2*xs[m], 2*ys[m], np.ones(m.sum())]
+                b = xs[m]**2 + ys[m]**2
+                sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+                cx, cy, c0 = sol
+                R = float(np.sqrt(max(0.0, c0 + cx*cx + cy*cy)))
+                rad = np.sqrt((xs[m]-cx)**2 + (ys[m]-cy)**2)
+                rms = float(np.sqrt(np.mean((rad - R)**2)))
+                print(f"Circle-fit: center=({cx:.1f},{cy:.1f}) mm, R={R:.1f} mm, RMS radial err={rms:.1f} mm")
+            else:
+                print("Circle-fit: not enough finite (x_pos,y_pos) samples.")
+        except Exception as _e:
+            print("Circle-fit: skipped (fit failed).")
+
+        save_csv(csv_path, times, errs, dvs,
+                 hdg=hdg, wz=wz,
+                 xhat_s=xhat_s, xhat_psi=xhat_psi, x_pos=x_pos, y_pos=y_pos, dist=dist,
+                 posL=posL, posR=posR,
+                 yhat_sL=yhat_sL, yhat_sR=yhat_sR, yhat_psi=yhat_psi, yhat_psidot=yhat_psidot,
+                 meta=meta)
+        plot_paths = save_plot(png_path, times, errs, dvs,
+                               xhat_psi=xhat_psi, x_pos=x_pos, y_pos=y_pos, dist=dist,
+                               meta=meta)
         print("Saved CSV:", csv_path)
-        print("Saved plots:", png_path, dv_png)
+        print("Saved plots:")
+        for p in plot_paths:
+            print("  ", p)
 
     except KeyboardInterrupt:
         print("KeyboardInterrupt received; attempting to close serial and exit.")

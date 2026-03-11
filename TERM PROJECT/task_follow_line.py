@@ -85,6 +85,8 @@ class task_follow_line:
                  heading_tol_deg: float = 3.0,
                  recovery_fwd_speed: float = None,
                  recovery_turn_speed: float = 450.0,
+                 line_lost_confirm_ms: float = 150.0,
+                 line_found_confirm_ms: float = 120.0,
 
                  # ---- OPTIONALS ----
                  Kd_line: Share = None,
@@ -183,6 +185,14 @@ class task_follow_line:
         self._lost_posR = 0
         self._target_heading = 0.0
 
+        # Debounce / persistence filtering for raw line validity
+        self._line_lost_confirm_us = int(float(line_lost_confirm_ms) * 1000.0)
+        self._line_found_confirm_us = int(float(line_found_confirm_ms) * 1000.0)
+        self._line_filter_initialized = False
+        self._raw_line_valid = True
+        self._filtered_line_valid = True
+        self._line_edge_t_us = ticks_us()
+
     # ------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------
@@ -198,6 +208,11 @@ class task_follow_line:
         self._lost_posL = 0
         self._lost_posR = 0
         self._target_heading = 0.0
+
+        self._line_filter_initialized = False
+        self._raw_line_valid = True
+        self._filtered_line_valid = True
+        self._line_edge_t_us = ticks_us()
 
         # Reset course script order when follow is re-enabled
         self._course_stage = 0
@@ -356,6 +371,32 @@ class task_follow_line:
 
         return valid, err
 
+    def _update_line_valid_filtered(self, raw_valid):
+        """Debounce raw line validity so brief flicker does not trigger scripts."""
+        now = ticks_us()
+        raw_valid = bool(raw_valid)
+
+        if not self._line_filter_initialized:
+            self._line_filter_initialized = True
+            self._raw_line_valid = raw_valid
+            self._filtered_line_valid = raw_valid
+            self._line_edge_t_us = now
+            return self._filtered_line_valid
+
+        if raw_valid != self._raw_line_valid:
+            self._raw_line_valid = raw_valid
+            self._line_edge_t_us = now
+            return self._filtered_line_valid
+
+        stable_us = ticks_diff(now, self._line_edge_t_us)
+
+        if raw_valid != self._filtered_line_valid:
+            needed_us = self._line_found_confirm_us if raw_valid else self._line_lost_confirm_us
+            if stable_us >= needed_us:
+                self._filtered_line_valid = raw_valid
+
+        return self._filtered_line_valid
+
     # ------------------------------------------------------------
     # Main task generator
     # ------------------------------------------------------------
@@ -391,7 +432,8 @@ class task_follow_line:
                 continue
 
             # Get line error + validity
-            line_valid, err = self._get_line_measurement(v)
+            raw_line_valid, err = self._get_line_measurement(v)
+            line_valid = self._update_line_valid_filtered(raw_line_valid)
 
             # --------------------------------------------------------
             # ACTIVE SCRIPT HANDLING

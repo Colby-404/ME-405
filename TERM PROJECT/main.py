@@ -362,7 +362,11 @@ followTask = task_follow_line(
 
     # Shared recovery tuning:
     #   Turn speed used during scripted recovery turns.
-    recovery_turn_speed=450.0
+    recovery_turn_speed=450.0,
+
+    # Debounce raw line validity so brief flicker does not trigger scripts.
+    line_lost_confirm_ms=500.0,
+    line_found_confirm_ms=120.0
 )
 
 # -----------------------------
@@ -379,6 +383,7 @@ tuningTask = task_tuning_ui(
     cal_done=cal_done,
     line_err=line_err,
     dv_out=dv_out,
+    line_ok=line_ok,
     leftMotorGo=motorLGo,
     rightMotorGo=motorRGo,
     imu_heading=imu_heading,

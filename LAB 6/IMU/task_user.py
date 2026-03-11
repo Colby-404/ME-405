@@ -323,7 +323,21 @@ class task_tuning_ui:
                  imu_en=None,        # Share("B") enable (optional)
                  imu_mode=None,      # Share("B") BNO055 mode byte (0x08 IMUPLUS, 0x0C NDOF, ...)
                  imu_zero_cmd=None,  # Share("B") write 1 -> zero heading
-                 imu_save_cmd=None): # Share("B") write 1 -> save calib to file
+                 imu_save_cmd=None,  # Share("B") write 1 -> save calib to file
+                 # --- State estimator shares (optional) ---
+                 est_en=None,        # Share("B") enable
+                 xhat_omegaL=None,   # Share("f") rad/s
+                 xhat_omegaR=None,   # Share("f") rad/s
+                 xhat_s=None,        # Share("f") mm
+                 xhat_psi=None,      # Share("f") rad
+                 yhat_sL=None,       # Share("f") mm
+                 yhat_sR=None,       # Share("f") mm
+                 yhat_psi=None,      # Share("f") rad
+                 yhat_psidot=None,   # Share("f") rad/s
+                 x_pos=None,         # Share("f") mm
+                 y_pos=None,         # Share("f") mm
+                 dist_traveled=None  # Share("f") mm
+                 ):
         self._start_user = start_user
         self._setpoint = setpoint
         self._Kp = Kp
@@ -350,6 +364,20 @@ class task_tuning_ui:
         self._leftMotorGo = leftMotorGo
         self._rightMotorGo = rightMotorGo
 
+        # State estimator shares (optional)
+        self._est_en = est_en
+        self._xhat_omegaL = xhat_omegaL
+        self._xhat_omegaR = xhat_omegaR
+        self._xhat_s = xhat_s
+        self._xhat_psi = xhat_psi
+        self._yhat_sL = yhat_sL
+        self._yhat_sR = yhat_sR
+        self._yhat_psi = yhat_psi
+        self._yhat_psidot = yhat_psidot
+        self._x_pos = x_pos
+        self._y_pos = y_pos
+        self._dist_traveled = dist_traveled
+
         self._digits = "0123456789"
         self._term1 = "\r"
         self._term2 = "\n"
@@ -363,6 +391,7 @@ class task_tuning_ui:
         self._stream_end_ms = 0
         self._stream_next_ms = 0
         self._stream_period_ms = 50
+        self._stream_kind = "LINE"   # "LINE" or "EST"
 
     def print_help(self):
         # Lazy import to save RAM at startup
@@ -429,10 +458,56 @@ class task_tuning_ui:
         s.write(("cal_armed: {}\r\n".format(int(self._cal_armed))).encode())
         s.write(b"-------------------\r\n>: ")
 
-    def _start_stream(self, ms=3000):
+    def _print_est_status(self):
+        s = self._ser
+
+        # If nothing is wired, give a clear message
+        if (self._xhat_omegaL is None and self._xhat_omegaR is None and self._xhat_s is None and
+                self._xhat_psi is None and self._yhat_sL is None and self._yhat_sR is None and
+                self._yhat_psi is None and self._yhat_psidot is None and self._x_pos is None and
+                self._y_pos is None and self._dist_traveled is None):
+            s.write(b"\r\nState estimator shares not wired in main.py\r\n>: ")
+            return
+
+        s.write(b"\r\n--- STATE ESTIMATOR ---\r\n")
+        if self._est_en is not None:
+            s.write(("est_en:        {}\r\n".format(int(self._est_en.get()))).encode())
+
+        # xhat
+        if self._xhat_omegaL is not None:
+            s.write(("xhat_omegaL:   {}  [rad/s]\r\n".format(self._xhat_omegaL.get())).encode())
+        if self._xhat_omegaR is not None:
+            s.write(("xhat_omegaR:   {}  [rad/s]\r\n".format(self._xhat_omegaR.get())).encode())
+        if self._xhat_s is not None:
+            s.write(("xhat_s:        {}  [mm]\r\n".format(self._xhat_s.get())).encode())
+        if self._xhat_psi is not None:
+            s.write(("xhat_psi:      {}  [rad]\r\n".format(self._xhat_psi.get())).encode())
+
+        # yhat
+        if self._yhat_sL is not None:
+            s.write(("yhat_sL:       {}  [mm]\r\n".format(self._yhat_sL.get())).encode())
+        if self._yhat_sR is not None:
+            s.write(("yhat_sR:       {}  [mm]\r\n".format(self._yhat_sR.get())).encode())
+        if self._yhat_psi is not None:
+            s.write(("yhat_psi:      {}  [rad]\r\n".format(self._yhat_psi.get())).encode())
+        if self._yhat_psidot is not None:
+            s.write(("yhat_psidot:   {}  [rad/s]\r\n".format(self._yhat_psidot.get())).encode())
+
+        # pose
+        if self._x_pos is not None:
+            s.write(("x_pos:         {}  [mm]\r\n".format(self._x_pos.get())).encode())
+        if self._y_pos is not None:
+            s.write(("y_pos:         {}  [mm]\r\n".format(self._y_pos.get())).encode())
+        if self._dist_traveled is not None:
+            s.write(("dist_traveled: {}  [mm]\r\n".format(self._dist_traveled.get())).encode())
+
+        s.write(b"-----------------------\r\n>: ")
+
+    def _start_stream(self, ms=3000, kind="LINE"):
         now = pyb.millis()
         self._stream_end_ms = now + int(ms)
         self._stream_next_ms = now
+        self._stream_kind = kind
         self._ui_mode = "SENSE_STREAM"
 
     def _cancel_cal(self):
@@ -513,7 +588,7 @@ class task_tuning_ui:
                             s.write(("Ki_line:   {}\r\n".format(self._Ki_line.get())).encode())
 
                         s.write(b"Motors RUNNING (LINE-FOLLOW MODE). Streaming line status...\r\n")
-                        self._start_stream(3600000)
+                        self._start_stream(3600000, kind="LINE")
 
                 elif c == "x":
                     s.write(b"\r\n")
@@ -608,7 +683,14 @@ class task_tuning_ui:
 
                 elif c == "q":
                     s.write(b"\r\nStreaming line status for 3 seconds (press any key to stop)...\r\n")
-                    self._start_stream(3000)
+                    self._start_stream(3000, kind="LINE")
+
+                elif c == "e":
+                    self._print_est_status()
+
+                elif c == "r":
+                    s.write(b"\r\nStreaming estimator status for 3 seconds (press any key to stop)...\r\n")
+                    self._start_stream(3000, kind="EST")
 
                 elif cmd == "\r" or cmd == "\n":
                     s.write(b"\r\n>: ")
@@ -677,36 +759,75 @@ class task_tuning_ui:
                 return
 
             if now >= self._stream_next_ms:
-                le = self._line_err.get() if self._line_err is not None else None
-                dv = self._dv_out.get() if self._dv_out is not None else None
-                fe = int(self._follow_en.get()) if self._follow_en is not None else None
+                if self._stream_kind == "EST":
+                    # Estimator stream
+                    s.write(b"xhat_wL=")
+                    s.write(("{}".format(self._xhat_omegaL.get()) if self._xhat_omegaL is not None else "NA").encode())
+                    s.write(b"  xhat_wR=")
+                    s.write(("{}".format(self._xhat_omegaR.get()) if self._xhat_omegaR is not None else "NA").encode())
+                    s.write(b"  xhat_s=")
+                    s.write(("{}".format(self._xhat_s.get()) if self._xhat_s is not None else "NA").encode())
+                    s.write(b"  xhat_psi=")
+                    s.write(("{}".format(self._xhat_psi.get()) if self._xhat_psi is not None else "NA").encode())
 
-                s.write(b"line_err=")
-                s.write(("{}".format(le) if le is not None else "NA").encode())
-                s.write(b"  dv_out=")
-                s.write(("{}".format(dv) if dv is not None else "NA").encode())
-                s.write(b"  follow_en=")
-                s.write(("{}".format(fe) if fe is not None else "NA").encode())
+                    s.write(b"  x_pos=")
+                    s.write(("{}".format(self._x_pos.get()) if self._x_pos is not None else "NA").encode())
+                    s.write(b"  y_pos=")
+                    s.write(("{}".format(self._y_pos.get()) if self._y_pos is not None else "NA").encode())
+                    s.write(b"  dist=")
+                    s.write(("{}".format(self._dist_traveled.get()) if self._dist_traveled is not None else "NA").encode())
+                    s.write(b"\r\n")
 
-                # IMU stream (optional)
-                if self._imu_heading is not None:
-                    s.write(b"  imu_heading=")
-                    s.write(("{}".format(self._imu_heading.get())).encode())
-                if self._imu_yawrate is not None:
-                    s.write(b"  imu_yawrate=")
-                    s.write(("{}".format(self._imu_yawrate.get())).encode())
-                if self._imu_calraw is not None:
-                    s.write(b"  imu_cal=")
-                    s.write(("0x{:02X}".format(int(self._imu_calraw.get()) & 0xFF)).encode())
+                else:
+                    # Existing line + IMU stream
+                    le = self._line_err.get() if self._line_err is not None else None
+                    dv = self._dv_out.get() if self._dv_out is not None else None
+                    fe = int(self._follow_en.get()) if self._follow_en is not None else None
 
-                if self._Kp_line is not None:
-                    s.write(b"  Kp_line: ")
-                    s.write(("{}".format(self._Kp_line.get())).encode())
-                if self._Ki_line is not None:
-                    s.write(b"  Ki_line: ")
-                    s.write(("{}".format(self._Ki_line.get())).encode())
+                    s.write(b"line_err=")
+                    s.write(("{}".format(le) if le is not None else "NA").encode())
+                    s.write(b"  dv_out=")
+                    s.write(("{}".format(dv) if dv is not None else "NA").encode())
+                    s.write(b"  follow_en=")
+                    s.write(("{}".format(fe) if fe is not None else "NA").encode())
 
-                s.write(b"\r\n")
+                    # IMU stream (optional)
+                    if self._imu_heading is not None:
+                        s.write(b"  imu_heading=")
+                        s.write(("{}".format(self._imu_heading.get())).encode())
+                    if self._imu_yawrate is not None:
+                        s.write(b"  imu_yawrate=")
+                        s.write(("{}".format(self._imu_yawrate.get())).encode())
+                    if self._imu_calraw is not None:
+                        s.write(b"  imu_cal=")
+                        s.write(("0x{:02X}".format(int(self._imu_calraw.get()) & 0xFF)).encode())
+
+                    if self._Kp_line is not None:
+                        s.write(b"  Kp_line: ")
+                        s.write(("{}".format(self._Kp_line.get())).encode())
+                    if self._Ki_line is not None:
+                        s.write(b"  Ki_line: ")
+                        s.write(("{}".format(self._Ki_line.get())).encode())
+
+                    # State estimator stream (optional, appended)
+                    if self._xhat_s is not None:
+                        s.write(b"  xhat_s=")
+                        s.write(("{}".format(self._xhat_s.get())).encode())
+                    if self._xhat_psi is not None:
+                        s.write(b"  xhat_psi=")
+                        s.write(("{}".format(self._xhat_psi.get())).encode())
+                    if self._x_pos is not None:
+                        s.write(b"  x_pos=")
+                        s.write(("{}".format(self._x_pos.get())).encode())
+                    if self._y_pos is not None:
+                        s.write(b"  y_pos=")
+                        s.write(("{}".format(self._y_pos.get())).encode())
+                    if self._dist_traveled is not None:
+                        s.write(b"  dist=")
+                        s.write(("{}".format(self._dist_traveled.get())).encode())
+
+                    s.write(b"\r\n")
+
                 self._stream_next_ms = now + self._stream_period_ms
 
     def run(self):

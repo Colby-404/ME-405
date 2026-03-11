@@ -1,44 +1,54 @@
-# main.py (internal PI inside task_motor, line-follow architecture preserved)
-# IMU integrated into tuning UI (enable/mode/zero/save) and published via task_imu
-# NOTE: State estimator is intentionally omitted until IMU + line-follow are stable.
+# main.py (low-RAM build)
+# - Internal PI inside task_motor
+# - Line-follow outer loop
+# - IMU task
+# - State estimator task
+# - Serial tuning UI (task_tuning_ui)
 
 import gc
+import micropython
 import pyb
+
+# Compile subsequent imports with higher optimization to save RAM
+try:
+    micropython.opt_level(3)
+except Exception:
+    pass
 
 gc.collect()
 
 # ---- Low-RAM import order ----
-# Import the largest modules first while the heap is clean, and GC between imports.
-from task_user import task_user, task_tuning_ui
-gc.collect()
+from task_tuning_ui import task_tuning_ui
+import gc; gc.collect()
 
 from motor_driver import motor_driver
-gc.collect()
+import gc; gc.collect()
 from encoder import encoder
-gc.collect()
+import gc; gc.collect()
 from task_motor import task_motor
-gc.collect()
-from task_share import Share, Queue
-gc.collect()
+import gc; gc.collect()
+from task_share import Share
+import gc; gc.collect()
 from cotask import Task, task_list
-gc.collect()
+import gc; gc.collect()
 from task_follow_line import task_follow_line
-gc.collect()
+import gc; gc.collect()
 from sensor_driver import QTRSensorsAnalog
-gc.collect()
+import gc; gc.collect()
 
 from imu_driver import BNO055
-gc.collect()
+import gc; gc.collect()
 from task_imu import task_imu
-gc.collect()
+import gc; gc.collect()
+
+from task_state_estimator import task_state_estimator
+import gc; gc.collect()
 # -----------------------------
 
-# -----------------------------
 # USB
-# -----------------------------
 ser = pyb.USB_VCP()
-ser.write(b"\r\n*** main.py started (Internal PI in task_motor build) ***\r\n")
-pyb.delay(50)
+ser.write(b"\r\nmain start\r\n")
+pyb.delay(20)
 
 # -----------------------------
 # Hardware setup (Motors/Encoders)
@@ -52,96 +62,75 @@ pwmR = tim4.channel(3, pyb.Timer.PWM, pin=pyb.Pin('PB8'))
 motorL = motor_driver(pwmL, 'PC0', 'PC1')
 motorR = motor_driver(pwmR, 'PC2', 'PC3')
 
-# NOTE: If a wheel "runs away" or oscillates badly, flip the corresponding invert flag.
 encL = encoder(2, 'PA0', 'PA1', invert=False)
 encR = encoder(1, 'PA8', 'PA9', invert=False)
 
 # -----------------------------
-# (A) IMU setup (BNO055 over I2C2)
-# Wiring per your table:
-#   SCL -> PB13
-#   SDA -> PB14
+# IMU (BNO055) over I2C2 (soft)
+#   SCL -> PB13, SDA -> PB14
 # -----------------------------
-
 imu = BNO055.from_softi2c('PB13', 'PB14', freq=100000, addr=0x28)
-
-# print("I2C scan:", i2c.scan())
-
-# Default fusion mode (can be overridden at runtime from UI via imu_mode share)
-# - IMUPLUS: accel+gyro only (no magnetometer) -> often more stable indoors
-# - NDOF: accel+gyro+mag -> absolute heading, but mag can be noisy near motors
 IMU_FUSION_MODE = BNO055.MODE_IMUPLUS
 
 # -----------------------------
-# Line sensor setup (QTR-MD-08A Analog)
+# Line sensor (QTR-MD-08A Analog)
 # -----------------------------
-ADC_PINS = [
-    'PC5',  # OUT7
-    'PC4',  # OUT6
-    'PB1',  # OUT5
-    'PB0',  # OUT4
-    'PA7',  # OUT3
-    'PA6',  # OUT2
-    'PA5',  # OUT1
-    'PA4',  # OUT0
-]
-
-# If QTR emitter/CTRL pin is wired, set it here (must NOT be one of ADC_PINS)
-EMITTER_PIN = None
-
-qtr = QTRSensorsAnalog(ADC_PINS, emitter_pin=EMITTER_PIN, invert=False)
+ADC_PINS = ['PC5', 'PC4', 'PB1', 'PB0', 'PA7', 'PA6', 'PA5', 'PA4']
+qtr = QTRSensorsAnalog(ADC_PINS, emitter_pin=None, invert=False)
 qtr.min_reading = 10
 
 # -----------------------------
-# Shares
+# Shares (no long 'name=' strings to save qstr RAM)
 # -----------------------------
-motorLGo = Share("B", name="Left Enable")
-motorRGo = Share("B", name="Right Enable")
+motorLGo = Share('B')
+motorRGo = Share('B')
 
-# Wheel PI gains (used directly by task_motor internal PI)
-Kp = Share("f", name="Wheel Kp")
-Ki = Share("f", name="Wheel Ki")
+Kp = Share('f')
+Ki = Share('f')
 
-# Per-wheel velocity setpoints (counts/s)
-setpointL = Share("f", name="Setpoint L")
-setpointR = Share("f", name="Setpoint R")
+setpointL = Share('f')
+setpointR = Share('f')
 
-# Measured wheel states
-omegaL = Share("f", name="Omega L")
-omegaR = Share("f", name="Omega R")
-posL = Share("l", name="Pos L")
-posR = Share("l", name="Pos R")
+omegaL = Share('f')
+omegaR = Share('f')
+posL = Share('l')
+posR = Share('l')
 
-# Effort shares kept for visibility/debug/UI compatibility
-effortL = Share("h", name="Left Effort")
-effortR = Share("h", name="Right Effort")
+effortL = Share('h')
+effortR = Share('h')
 
-start_user = Share("B", name="Start User Task")
+follow_en = Share('B')
+v_nom     = Share('f')
+Kp_line   = Share('f')
+Ki_line   = Share('f')
+line_err  = Share('f')
+dv_out    = Share('f')
 
-# Outer-loop (line-follow) shares
-follow_en = Share("B", name="Follow Enable")
-v_nom     = Share("f", name="V_nom")      # counts/s
-Kp_line   = Share("f", name="Line Kp")
-Ki_line   = Share("f", name="Line Ki")
-line_err  = Share("f", name="Line Error")
-dv_out    = Share("f", name="dv_out")
-line_ok   = Share("B", name="Line OK")
+cal_cmd  = Share('B')
+cal_done = Share('B')
 
-# Calibration command shares (line sensor)
-cal_cmd  = Share("B", name="Cal Cmd")
-cal_done = Share("B", name="Cal Done")
-
-# -----------------------------
 # IMU shares
-# -----------------------------
-imu_en        = Share("B", name="IMU Enable")         # 0/1
-imu_mode      = Share("B", name="IMU Mode")           # BNO055 mode byte (0x08, 0x0C, ...)
-imu_zero_cmd  = Share("B", name="IMU Zero Cmd")       # write 1 to zero heading
-imu_save_cmd  = Share("B", name="IMU Save Cal Cmd")   # write 1 to save calib profile to file
+imu_en        = Share('B')
+imu_mode      = Share('B')
+imu_zero_cmd  = Share('B')
+imu_save_cmd  = Share('B')
+imu_heading   = Share('f')
+imu_yawrate   = Share('f')
+imu_calraw    = Share('B')
 
-imu_heading = Share("f", name="IMU Heading deg")      # published (zeroed heading)
-imu_yawrate = Share("f", name="IMU YawRate dps")      # published
-imu_calraw  = Share("B", name="IMU Cal Raw")          # published
+# Estimator shares (minimal set used by UI + step_collector)
+est_en   = Share('B')
+xhat_s   = Share('f')
+xhat_psi = Share('f')
+x_pos    = Share('f')
+y_pos    = Share('f')
+dist_traveled = Share('f')
+
+# Optional estimator outputs for proof / logging
+yhat_sL     = Share('f')
+yhat_sR     = Share('f')
+yhat_psi    = Share('f')
+yhat_psidot = Share('f')
 
 # -----------------------------
 # Initial values
@@ -162,7 +151,6 @@ Ki_line.put(0.0)
 
 line_err.put(0.0)
 dv_out.put(0.0)
-line_ok.put(0)
 
 cal_cmd.put(0)
 cal_done.put(0)
@@ -170,36 +158,34 @@ cal_done.put(0)
 effortL.put(0)
 effortR.put(0)
 
-start_user.put(0)
-
 imu_en.put(1)
 imu_mode.put(int(IMU_FUSION_MODE) & 0xFF)
 imu_zero_cmd.put(0)
 imu_save_cmd.put(0)
-
 imu_heading.put(0.0)
 imu_yawrate.put(0.0)
 imu_calraw.put(0)
 
-# -----------------------------
-# Queues (wheel logging)
-# -----------------------------
-dataValuesL = Queue("f", 100, name="Left Data Buffer")
-timeValuesL = Queue("L", 100, name="Left Time Buffer")
+est_en.put(1)
+xhat_s.put(0.0)
+xhat_psi.put(0.0)
+x_pos.put(0.0)
+y_pos.put(0.0)
+dist_traveled.put(0.0)
 
-dataValuesR = Queue("f", 100, name="Right Data Buffer")
-timeValuesR = Queue("L", 100, name="Right Time Buffer")
+yhat_sL.put(0.0)
+yhat_sR.put(0.0)
+yhat_psi.put(0.0)
+yhat_psidot.put(0.0)
 
 # -----------------------------
-# Motor tasks (INTERNAL PI ENABLED)
+# Motor tasks (internal PI)
 # -----------------------------
 leftMotorTask = task_motor(
     motorL, encL,
     motorLGo, effortL, posL, omegaL,
-    dataValuesL, timeValuesL,
-    setpoint=setpointL,
-    Kp=Kp,
-    Ki=Ki,
+    data_q=None, time_q=None,
+    setpoint=setpointL, Kp=Kp, Ki=Ki,
     use_internal_pi=True,
     effort_sat=100
 )
@@ -207,16 +193,14 @@ leftMotorTask = task_motor(
 rightMotorTask = task_motor(
     motorR, encR,
     motorRGo, effortR, posR, omegaR,
-    dataValuesR, timeValuesR,
-    setpoint=setpointR,
-    Kp=Kp,
-    Ki=Ki,
+    data_q=None, time_q=None,
+    setpoint=setpointR, Kp=Kp, Ki=Ki,
     use_internal_pi=True,
     effort_sat=100
 )
 
 # -----------------------------
-# IMU task: updates imu_heading + imu_yawrate + imu_calraw
+# IMU task
 # -----------------------------
 imuTask = task_imu(
     imu=imu,
@@ -228,21 +212,39 @@ imuTask = task_imu(
     yaw_rate_dps=imu_yawrate,
     calib_raw=imu_calraw,
     require_mag=False,
-    calib_file="bno055_calib.bin",
+    calib_file='bno055_calib.bin',
     try_load_calib=True,
     fusion_mode=IMU_FUSION_MODE
 )
 
 # -----------------------------
-# Sensor read task: updates line_err + line_ok + handles calibration
+# State estimator task (minimal publishes)
+# -----------------------------
+estTask = task_state_estimator(
+    est_en,
+    posL, posR,
+    effortL, effortR,
+    imu_heading, imu_yawrate,
+    xhat_s, xhat_psi,
+    x_pos=x_pos, y_pos=y_pos, dist_traveled=dist_traveled,
+    yhat_sL=yhat_sL, yhat_sR=yhat_sR, yhat_psi=yhat_psi, yhat_psidot=yhat_psidot,
+    wheel_radius_mm=35.0,
+    track_width_mm=141.0,
+    counts_per_rad=229.1831,
+    v_batt=7.4,
+    unwrap_heading=True,
+    pose_heading_sign=-1.0
+)
+
+# -----------------------------
+# Line sensor read task (updates line_err)
 # -----------------------------
 def task_read_line():
     OVERSAMPLE = 4
     CAL_SAMPLES = 80
-
     STRENGTH_MIN = 400
-    ACTIVE_MIN   = 2
-    ACTIVE_TH    = 80
+    ACTIVE_MIN = 2
+    ACTIVE_TH = 80
 
     while True:
         try:
@@ -253,16 +255,14 @@ def task_read_line():
                                     emitters=True, settle_ms=100)
                 cal_cmd.put(0)
                 cal_done.put(1)
-                print("WHITE:", qtr.white)
 
             elif cmd == 2:
                 qtr.calibrate_black(samples=CAL_SAMPLES, oversample=OVERSAMPLE,
                                     emitters=True, settle_ms=100)
-                if hasattr(qtr, "fix_calibration_order"):
+                if hasattr(qtr, 'fix_calibration_order'):
                     qtr.fix_calibration_order()
                 cal_cmd.put(0)
                 cal_done.put(1)
-                print("BLACK:", qtr.black)
 
             qtr.read_normalized(oversample=OVERSAMPLE, emitters=True)
 
@@ -287,20 +287,18 @@ def task_read_line():
                     pos = weighted_sum // total
                     center = (qtr.count - 1) * 1000 // 2
                     line_err.put(float(pos - center))
-                    line_ok.put(1)
-                else:
-                    line_ok.put(0)
-            else:
-                line_ok.put(0)
-
+            
         except Exception as e:
-            line_ok.put(0)
-            print("task_read_line error:", e)
+            # keep running even if sensor hiccups
+            try:
+                print('line err', e)
+            except Exception:
+                pass
 
         yield 0
 
 # -----------------------------
-# Outer-loop line-follow task (writes setpointL/setpointR)
+# Line-follow task (writes wheel setpoints)
 # -----------------------------
 followTask = task_follow_line(
     enable_follow=follow_en,
@@ -319,60 +317,32 @@ followTask = task_follow_line(
 )
 
 # -----------------------------
-# UI tasks
+# UI task
 # -----------------------------
-tuningTask = task_tuning_ui(
-    start_user,
+uiTask = task_tuning_ui(
     v_nom, Kp, Ki,
     ser=ser,
-    follow_en=follow_en,
-    Kp_line=Kp_line,
-    Ki_line=Ki_line,
-    cal_cmd=cal_cmd,
-    cal_done=cal_done,
-    line_err=line_err,
-    dv_out=dv_out,
-    leftMotorGo=motorLGo,
-    rightMotorGo=motorRGo,
-    imu_heading=imu_heading,
-    imu_yawrate=imu_yawrate,
-    imu_calraw=imu_calraw,
-    imu_en=imu_en,
-    imu_mode=imu_mode,
-    imu_zero_cmd=imu_zero_cmd,
-    imu_save_cmd=imu_save_cmd,
-)
-
-userTask = task_user(
-    start_user,
-    motorLGo, motorRGo,
-    dataValuesL, timeValuesL,
-    dataValuesR, timeValuesR,
-    v_nom, Kp, Ki,
-    ser,
-    follow_en=follow_en,
-    Kp_line=Kp_line,
-    Ki_line=Ki_line,
-    line_err=line_err,
-    dv_out=dv_out,
-    imu_heading=imu_heading,
-    imu_yawrate=imu_yawrate,
-    imu_calraw=imu_calraw,
+    motors=(motorLGo, motorRGo),
+    line=(follow_en, Kp_line, Ki_line, line_err, dv_out),
+    cal=(cal_cmd, cal_done),
+    imu=(imu_en, imu_mode, imu_zero_cmd, imu_save_cmd, imu_heading, imu_yawrate, imu_calraw),
+    enc=(posL, posR),
+    est=(est_en, xhat_s, xhat_psi, x_pos, y_pos, dist_traveled, yhat_sL, yhat_sR, yhat_psi, yhat_psidot)
 )
 
 # -----------------------------
 # Scheduler
 # -----------------------------
-task_list.append(Task(leftMotorTask.run,  name="Left Motor",    priority=1, period=20))
-task_list.append(Task(rightMotorTask.run, name="Right Motor",   priority=1, period=20))
+task_list.append(Task(leftMotorTask.run,  name='L', priority=1, period=20))
+task_list.append(Task(rightMotorTask.run, name='R', priority=1, period=20))
 
-task_list.append(Task(task_read_line,     name="Line Read",     priority=3, period=20))
-task_list.append(Task(followTask.run,     name="Line Follow",   priority=3, period=20))
+task_list.append(Task(task_read_line,     name='S', priority=3, period=20))
+task_list.append(Task(followTask.run,     name='F', priority=3, period=20))
 
-task_list.append(Task(imuTask.run,        name="IMU",           priority=2, period=20))
+task_list.append(Task(imuTask.run,        name='I', priority=2, period=20))
+task_list.append(Task(estTask.run,        name='E', priority=2, period=20))
 
-task_list.append(Task(tuningTask.run,     name="Tuning UI",     priority=0, period=50))
-task_list.append(Task(userTask.run,       name="User",          priority=0, period=50))
+task_list.append(Task(uiTask.run,         name='U', priority=0, period=50))
 
 # -----------------------------
 # RUN
@@ -381,7 +351,5 @@ while True:
     try:
         task_list.pri_sched()
     except KeyboardInterrupt:
-        motorL.disable()
-        motorR.disable()
-        print("Program Terminated")
+        motorL.disable(); motorR.disable()
         break

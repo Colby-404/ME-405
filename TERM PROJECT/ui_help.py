@@ -25,7 +25,6 @@ def print_help(s):
     # Bump sensor ISR that does a 200 and enables line following again 
     # push forwords
     # Program stops when encoder reach a specific rotation. 
-
     s.write(b"+---+--------------------------------------------------------------------------+\r\n")
     s.write(b"\r\n>: ")
     pyb.delay(10)
