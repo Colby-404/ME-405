@@ -13,6 +13,10 @@
 #   2) straight
 #   3) 90-ish right turn
 #   4) straight
+#
+# NEW:
+#   - can automatically change WHEEL Kp/Ki at tune_trigger_counts
+#   - can automatically change WHEEL Kp/Ki again at stage0_trigger_counts
 
 import micropython
 
@@ -78,6 +82,16 @@ class task_follow_line:
                  stage0_forward1_counts: float = 500.0,
                  stage0_turn2_counts: float = 260.0,
                  stage0_forward2_counts: float = 600.0,
+
+                 # NEW: wheel gain scheduling shares + values
+                 wheel_Kp: Share = None,
+                 wheel_Ki: Share = None,
+                 base_wheel_Kp: float = None,
+                 base_wheel_Ki: float = None,
+                 tune_wheel_Kp: float = None,
+                 tune_wheel_Ki: float = None,
+                 script_wheel_Kp: float = None,
+                 script_wheel_Ki: float = None,
 
                  # debug
                  script_state_share: Share = None,
@@ -165,6 +179,18 @@ class task_follow_line:
         self._stage0_turn2_counts = float(stage0_turn2_counts)
         self._stage0_forward2_counts = float(stage0_forward2_counts)
 
+        # NEW: wheel gain scheduling
+        self._wheel_Kp = wheel_Kp
+        self._wheel_Ki = wheel_Ki
+        self._base_wheel_Kp = base_wheel_Kp
+        self._base_wheel_Ki = base_wheel_Ki
+        self._tune_wheel_Kp = tune_wheel_Kp
+        self._tune_wheel_Ki = tune_wheel_Ki
+        self._script_wheel_Kp = script_wheel_Kp
+        self._script_wheel_Ki = script_wheel_Ki
+        self._tune_gains_applied = False
+        self._script_gains_applied = False
+
         self._script_state_share = script_state_share
         self._script_total_counts_share = script_total_counts_share
         self._script_segment_counts_share = script_segment_counts_share
@@ -200,6 +226,13 @@ class task_follow_line:
         self._lost_since_us = None
         self._found_since_us = None
         self._start_sync_cycles = 2
+
+        # NEW: reset wheel gain scheduling flags
+        self._tune_gains_applied = False
+        self._script_gains_applied = False
+
+        # NEW: apply base wheel gains at start of each run
+        self._apply_wheel_gains(self._base_wheel_Kp, self._base_wheel_Ki)
 
     def _clamp(self, x, lo, hi):
         if x < lo:
@@ -246,6 +279,19 @@ class task_follow_line:
         if self._dynamic_sat:
             return abs(float(v_nom_value)) * self._sat_ratio
         return self._sat_dv
+
+    def _apply_wheel_gains(self, kp_val, ki_val):
+        if self._wheel_Kp is not None and kp_val is not None:
+            try:
+                self._wheel_Kp.put(float(kp_val))
+            except Exception:
+                pass
+
+        if self._wheel_Ki is not None and ki_val is not None:
+            try:
+                self._wheel_Ki.put(float(ki_val))
+            except Exception:
+                pass
 
     def _log_centroid(self, centroid_value):
         if self._centroid_out is not None:
@@ -413,6 +459,15 @@ class task_follow_line:
 
             counts_from_start = self._avg_counts_since_start()
             counts_in_segment = self._avg_counts_since_segment()
+
+            # NEW: apply wheel gains automatically at encoder thresholds
+            if (not self._tune_gains_applied) and (counts_from_start >= self._tune_trigger_counts):
+                self._apply_wheel_gains(self._tune_wheel_Kp, self._tune_wheel_Ki)
+                self._tune_gains_applied = True
+
+            if (not self._script_gains_applied) and (counts_from_start >= self._stage0_trigger_counts):
+                self._apply_wheel_gains(self._script_wheel_Kp, self._script_wheel_Ki)
+                self._script_gains_applied = True
 
             tune_zone_active = (counts_from_start >= self._tune_trigger_counts) and (not self._script_started)
 

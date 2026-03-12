@@ -333,16 +333,14 @@ followTask = task_follow_line(
     use_line_recovery=False,
     enable_encoder_script=True,
 
-    # First encoder threshold: just mark a tuning zone in the live stream.
-    # The robot keeps line-following here, but the state changes to TUNE_ZONE
-    # so you know you are in the section where wheel Kp/Ki can be adjusted.
+    # First encoder threshold: enter tune zone
     tune_trigger_counts=8000.0,
 
-    # Second encoder threshold: start the scripted maneuver once.
+    # Second encoder threshold: start scripted maneuver
     stage0_trigger_counts=9813.0,
 
     # Encoder-only scripted sequence:
-    #   small right turn -> straight -> 90-ish right turn -> straight
+    # small right -> straight -> 90-ish right -> straight
     small_right_counts=150.0,
     stage0_forward1_counts=1000.0,
     stage0_turn2_counts=260.0,
@@ -351,6 +349,22 @@ followTask = task_follow_line(
     # Speeds used during scripted motion
     recovery_fwd_speed=600.0,
     recovery_turn_speed=450.0,
+
+    # automatic wheel Kp/Ki changes by encoder count
+    wheel_Kp=Kp,
+    wheel_Ki=Ki,
+
+    # gains before 8000 ticks
+    base_wheel_Kp=0.09,
+    base_wheel_Ki=0.0,
+
+    # gains from 8000 to 9813 ticks
+    tune_wheel_Kp=0.09,
+    tune_wheel_Ki=0.0,
+
+    # gains at 9813 ticks and after
+    script_wheel_Kp=0.09,
+    script_wheel_Ki=0.0,
 
     # Safe lost-line behavior while in normal follow mode
     line_lost_confirm_ms=120.0,
@@ -361,7 +375,6 @@ followTask = task_follow_line(
     script_total_counts_share=script_total_counts,
     script_segment_counts_share=script_segment_counts,
 )
-
 # -----------------------------
 # UI tasks
 # -----------------------------
