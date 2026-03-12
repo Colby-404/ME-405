@@ -20,6 +20,17 @@ def print_help(s):
     s.write(b"| z | Zero IMU heading (sets current heading to 0)                             |\r\n") 
     s.write(b"| u | Save IMU calibration profile to bno055_calib.bin                         |\r\n")
 
+    # Needs to slow down at CP 1
+    # Need to test specific encoder values so that it preforms straight line correctly
+    # Need to test specific Angle values so that it preforms right turn correctly
+    # forwords until bump ISR
+    # Bump sensor ISR that does a 200 and enables line following again 
+
+
+    
+    # When line lost it then goes forwords and 360 to knock off cup then comes back and enables follow line again
+    # Program stops when encoder reach a specific rotation. 
+
     s.write(b"+---+--------------------------------------------------------------------------+\r\n")
     s.write(b"\r\n>: ")
     pyb.delay(10)

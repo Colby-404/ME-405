@@ -1,4 +1,5 @@
-# main.py (internal PI inside task_motor, line-follow architecture preserved)
+# main.py
+# Internal PI inside task_motor, line-follow architecture preserved
 # IMU integrated into tuning UI (enable/mode/zero/save) and published via task_imu
 # NOTE: State estimator is intentionally omitted until IMU + line-follow are stable.
 
@@ -8,10 +9,6 @@ import pyb
 gc.collect()
 
 # ---- Low-RAM import order ----
-# Import the largest modules first while the heap is clean, and GC between imports.
-
-# Original import kept here for later if you want to restore the old data-collection UI:
-# from task_user import task_user, task_tuning_ui
 from task_user import task_tuning_ui
 gc.collect()
 
@@ -34,13 +31,12 @@ from imu_driver import BNO055
 gc.collect()
 from task_imu import task_imu
 gc.collect()
-# -----------------------------
 
 # -----------------------------
 # USB
 # -----------------------------
 ser = pyb.USB_VCP()
-ser.write(b"\r\n*** main.py started (Internal PI in task_motor build) ***\r\n")
+ser.write(b"\r\n*** main.py started (encoder-trigger scripted follow, no line_ok) ***\r\n")
 pyb.delay(50)
 
 # -----------------------------
@@ -60,19 +56,15 @@ encL = encoder(2, 'PA0', 'PA1', invert=False)
 encR = encoder(1, 'PA8', 'PA9', invert=False)
 
 # -----------------------------
-# (A) IMU setup (BNO055 over I2C2)
-# Wiring per your table:
+# IMU setup (BNO055 over I2C2)
+# Wiring:
 #   SCL -> PB13
 #   SDA -> PB14
 # -----------------------------
-
 imu = BNO055.from_softi2c('PB13', 'PB14', freq=100000, addr=0x28)
 
-# print("I2C scan:", i2c.scan())
-
-# Default fusion mode (can be overridden at runtime from UI via imu_mode share)
-# - IMUPLUS: accel+gyro only (no magnetometer) -> often more stable indoors
-# - NDOF: accel+gyro+mag -> absolute heading, but mag can be noisy near motors
+# - IMUPLUS: accel+gyro only (no magnetometer)
+# - NDOF: accel+gyro+mag
 IMU_FUSION_MODE = BNO055.MODE_IMUPLUS
 
 # -----------------------------
@@ -90,10 +82,14 @@ ADC_PINS = [
 ]
 
 # If QTR emitter/CTRL pin is wired, set it here (must NOT be one of ADC_PINS)
-EMITTER_PIN = None
+EMITTER_PIN = 'PC8'
 
 qtr = QTRSensorsAnalog(ADC_PINS, emitter_pin=EMITTER_PIN, invert=False)
 qtr.min_reading = 10
+if hasattr(qtr, 'force_full_brightness'):
+    qtr.force_full_brightness()
+if hasattr(qtr, 'emitters_on'):
+    qtr.emitters_on()
 
 # -----------------------------
 # Shares
@@ -120,17 +116,15 @@ effortL = Share("h", name="Left Effort")
 effortR = Share("h", name="Right Effort")
 
 # Kept for compatibility with the current task_tuning_ui implementation.
-# Old data-collection UI used this to switch menus.
 start_user = Share("B", name="Start User Task")
 
-# Outer-loop (line-follow) shares
+# Outer-loop shares
 follow_en = Share("B", name="Follow Enable")
 v_nom     = Share("f", name="V_nom")      # counts/s
 Kp_line   = Share("f", name="Line Kp")
 Ki_line   = Share("f", name="Line Ki")
 line_err  = Share("f", name="Line Error")
 dv_out    = Share("f", name="dv_out")
-line_ok   = Share("B", name="Line OK")
 
 # Calibration command shares (line sensor)
 cal_cmd  = Share("B", name="Cal Cmd")
@@ -139,14 +133,14 @@ cal_done = Share("B", name="Cal Done")
 # -----------------------------
 # IMU shares
 # -----------------------------
-imu_en        = Share("B", name="IMU Enable")         # 0/1
-imu_mode      = Share("B", name="IMU Mode")           # BNO055 mode byte (0x08, 0x0C, ...)
-imu_zero_cmd  = Share("B", name="IMU Zero Cmd")       # write 1 to zero heading
-imu_save_cmd  = Share("B", name="IMU Save Cal Cmd")   # write 1 to save calib profile to file
+imu_en        = Share("B", name="IMU Enable")
+imu_mode      = Share("B", name="IMU Mode")
+imu_zero_cmd  = Share("B", name="IMU Zero Cmd")
+imu_save_cmd  = Share("B", name="IMU Save Cal Cmd")
 
-imu_heading = Share("f", name="IMU Heading deg")      # published (zeroed heading)
-imu_yawrate = Share("f", name="IMU YawRate dps")      # published
-imu_calraw  = Share("B", name="IMU Cal Raw")          # published
+imu_heading = Share("f", name="IMU Heading deg")
+imu_yawrate = Share("f", name="IMU YawRate dps")
+imu_calraw  = Share("B", name="IMU Cal Raw")
 
 # -----------------------------
 # Initial values
@@ -157,17 +151,17 @@ motorRGo.put(0)
 Kp.put(0.09)
 Ki.put(0.0)
 
-v_nom.put(800.0)
+v_nom.put(700.0)
 setpointL.put(v_nom.get())
 setpointR.put(v_nom.get())
 
-follow_en.put(1)
+# Better to start disabled, then enable from UI when ready
+follow_en.put(0)
 Kp_line.put(0.7)
 Ki_line.put(0.0)
 
 line_err.put(0.0)
 dv_out.put(0.0)
-line_ok.put(0)
 
 cal_cmd.put(0)
 cal_done.put(0)
@@ -189,8 +183,6 @@ imu_calraw.put(0)
 # -----------------------------
 # Queues (wheel logging)
 # -----------------------------
-# Kept for now because task_motor may still expect these buffers.
-# If you later confirm task_motor does not need them, these are a good place to save RAM.
 dataValuesL = Queue("f", 100, name="Left Data Buffer")
 timeValuesL = Queue("L", 100, name="Left Time Buffer")
 
@@ -223,7 +215,7 @@ rightMotorTask = task_motor(
 )
 
 # -----------------------------
-# IMU task: updates imu_heading + imu_yawrate + imu_calraw
+# IMU task
 # -----------------------------
 imuTask = task_imu(
     imu=imu,
@@ -241,30 +233,34 @@ imuTask = task_imu(
 )
 
 # -----------------------------
-# Sensor read task: updates line_err + line_ok + handles calibration
+# Sensor read task: updates line_err and handles calibration
 # -----------------------------
 def task_read_line():
     OVERSAMPLE = 4
     CAL_SAMPLES = 80
-
-    STRENGTH_MIN = 400
-    ACTIVE_MIN   = 2
-    ACTIVE_TH    = 80
 
     while True:
         try:
             cmd = int(cal_cmd.get())
 
             if cmd == 1:
-                qtr.calibrate_white(samples=CAL_SAMPLES, oversample=OVERSAMPLE,
-                                    emitters=True, settle_ms=100)
+                qtr.calibrate_white(
+                    samples=CAL_SAMPLES,
+                    oversample=OVERSAMPLE,
+                    emitters=True,
+                    settle_ms=100
+                )
                 cal_cmd.put(0)
                 cal_done.put(1)
                 print("WHITE:", qtr.white)
 
             elif cmd == 2:
-                qtr.calibrate_black(samples=CAL_SAMPLES, oversample=OVERSAMPLE,
-                                    emitters=True, settle_ms=100)
+                qtr.calibrate_black(
+                    samples=CAL_SAMPLES,
+                    oversample=OVERSAMPLE,
+                    emitters=True,
+                    settle_ms=100
+                )
                 if hasattr(qtr, "fix_calibration_order"):
                     qtr.fix_calibration_order()
                 cal_cmd.put(0)
@@ -273,41 +269,31 @@ def task_read_line():
 
             qtr.read_normalized(oversample=OVERSAMPLE, emitters=True)
 
-            strength = 0
-            active = 0
-            for v in qtr.norm:
-                strength += v
-                if v > ACTIVE_TH:
-                    active += 1
+            weighted_sum = 0
+            total = 0
+            for i in range(qtr.count):
+                v = qtr.norm[i]
+                if v < qtr.min_reading:
+                    v = 0
+                weighted_sum += v * (i * 1000)
+                total += v
 
-            if (strength >= STRENGTH_MIN) and (active >= ACTIVE_MIN):
-                weighted_sum = 0
-                total = 0
-                for i in range(qtr.count):
-                    v = qtr.norm[i]
-                    if v < qtr.min_reading:
-                        v = 0
-                    weighted_sum += v * (i * 1000)
-                    total += v
-
-                if total > 0:
-                    pos = weighted_sum // total
-                    center = (qtr.count - 1) * 1000 // 2
-                    line_err.put(float(pos - center))
-                    line_ok.put(1)
-                else:
-                    line_ok.put(0)
+            if total > 0:
+                pos = weighted_sum // total
+                center = (qtr.count - 1) * 1000 // 2
+                line_err.put(float(pos - center))
             else:
-                line_ok.put(0)
+                line_err.put(0.0)
 
         except Exception as e:
-            line_ok.put(0)
+            line_err.put(0.0)
             print("task_read_line error:", e)
 
         yield 0
 
 # -----------------------------
 # Outer-loop line-follow task (writes setpointL/setpointR)
+# Scripts are triggered by HARD-CODED encoder travel from follow-enable.
 # -----------------------------
 followTask = task_follow_line(
     enable_follow=follow_en,
@@ -320,7 +306,6 @@ followTask = task_follow_line(
     dv_out=dv_out,
     sat_dv=600.0,
     period_ms=50,
-    line_ok=line_ok,
     sp_min=-3000.0,
     sp_max=3000.0,
 
@@ -329,44 +314,38 @@ followTask = task_follow_line(
     posR_meas=posR,
     use_line_recovery=True,
 
-    # First scripted section:
-    #   Robot drives forward this many encoder counts after the first line loss
-    #   before starting the 90-degree right turn.
-    lost_forward_counts=150.0,
+    # Script 0:
+    # forward distance inside script 0 before starting the right turn
+    lost_forward_counts=600.0,
 
-    # First scripted section:
-    #   Right-turn angle in degrees for the first special maneuver.
-    turn_right_deg=90.0,
+    # Script 0:
+    # right-turn angle in degrees
+    turn_right_deg=260.0,
 
-    # Second scripted section:
-    #   Robot drives forward this many encoder counts before beginning the 360.
-    stage1_forward1_counts=150.0,
+    # Script 1:
+    # forward distance before beginning the 360 sequence
+    stage1_forward1_counts=800.0,
 
-    # Second scripted section:
-    #   Half-turn angle used twice to make a full 360 (180 + 180).
+    # Script 1:
+    # half-turn angle used twice to make a full 360 (180 + 180)
     stage1_turn_half_deg=180.0,
 
-    # Second scripted section:
-    #   Robot drives forward this many encoder counts after the 360
-    #   before continuing straight until the line is found again.
+    # Script 1:
+    # forward distance after the 360 sequence before returning to normal follow
     stage1_forward2_counts=150.0,
 
-    # Shared recovery tuning:
-    #   Allowed heading error band in degrees when deciding a turn is complete.
+    # Shared scripted-motion tuning
     heading_tol_deg=3.0,
-
-    # Shared recovery tuning:
-    #   Forward speed used during scripted recovery.
-    #   If set to None, recovery uses the current v_nom value instead.
     recovery_fwd_speed=700.0,
-
-    # Shared recovery tuning:
-    #   Turn speed used during scripted recovery turns.
     recovery_turn_speed=450.0,
 
-    # Debounce raw line validity so brief flicker does not trigger scripts.
+    # Compatibility only; not used to trigger scripts anymore
     line_lost_confirm_ms=500.0,
-    line_found_confirm_ms=120.0
+    line_found_confirm_ms=120.0,
+
+    # Encoder travel from follow-enable that starts each scripted section
+    stage0_trigger_counts=11300.0,
+    stage1_trigger_counts=10000.0
 )
 
 # -----------------------------
@@ -383,7 +362,6 @@ tuningTask = task_tuning_ui(
     cal_done=cal_done,
     line_err=line_err,
     dv_out=dv_out,
-    line_ok=line_ok,
     leftMotorGo=motorLGo,
     rightMotorGo=motorRGo,
     imu_heading=imu_heading,
@@ -395,24 +373,6 @@ tuningTask = task_tuning_ui(
     imu_save_cmd=imu_save_cmd,
 )
 
-# Old data-collection UI task kept commented out for later restore.
-# userTask = task_user(
-#     start_user,
-#     motorLGo, motorRGo,
-#     dataValuesL, timeValuesL,
-#     dataValuesR, timeValuesR,
-#     v_nom, Kp, Ki,
-#     ser,
-#     follow_en=follow_en,
-#     Kp_line=Kp_line,
-#     Ki_line=Ki_line,
-#     line_err=line_err,
-#     dv_out=dv_out,
-#     imu_heading=imu_heading,
-#     imu_yawrate=imu_yawrate,
-#     imu_calraw=imu_calraw,
-# )
-
 # -----------------------------
 # Scheduler
 # -----------------------------
@@ -423,11 +383,7 @@ task_list.append(Task(task_read_line,     name="Line Read",     priority=3, peri
 task_list.append(Task(followTask.run,     name="Line Follow",   priority=3, period=20))
 
 task_list.append(Task(imuTask.run,        name="IMU",           priority=2, period=20))
-
 task_list.append(Task(tuningTask.run,     name="Tuning UI",     priority=0, period=50))
-
-# Old data-collection UI task kept commented out for later restore.
-# task_list.append(Task(userTask.run,       name="User",          priority=0, period=50))
 
 # -----------------------------
 # RUN

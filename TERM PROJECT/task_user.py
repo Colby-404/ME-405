@@ -66,7 +66,6 @@ class task_user:
         self._Ki_line = Ki_line
         self._line_err = line_err
         self._dv_out = dv_out
-        self._line_ok = line_ok
 
         # IMU shares (optional)
         self._imu_heading = imu_heading
@@ -318,7 +317,6 @@ class task_tuning_ui:
                  cal_done=None,
                  line_err=None,
                  dv_out=None,
-                 line_ok=None,
                  leftMotorGo=None,
                  rightMotorGo=None,
                  # --- IMU shares (optional) ---
@@ -342,7 +340,6 @@ class task_tuning_ui:
         self._cal_done = cal_done
         self._line_err = line_err
         self._dv_out = dv_out
-        self._line_ok = line_ok
 
         # IMU shares (optional)
         self._imu_heading = imu_heading
@@ -372,10 +369,10 @@ class task_tuning_ui:
 
         # USER button on Nucleo board (B1 = PC13)
         try:
-            self._user_btn = pyb.Pin(pyb.Pin.cpu.C13, pyb.Pin.IN)
+            self._user_btn = pyb.Pin('PC13', pyb.Pin.IN)
         except Exception:
             self._user_btn = None
-        self._user_btn_prev = self._user_btn.value() if self._user_btn is not None else 1
+        self._user_btn_prev = 1
 
     def print_help(self):
         # Lazy import to save RAM at startup
@@ -423,8 +420,6 @@ class task_tuning_ui:
             s.write(("line_err:  {}\r\n".format(self._line_err.get())).encode())
         if self._dv_out is not None:
             s.write(("dv_out:    {}\r\n".format(self._dv_out.get())).encode())
-        if self._line_ok is not None:
-            s.write(("line_ok:   {}\r\n".format(int(self._line_ok.get()))).encode())
         if self._Kp_line is not None and self._Ki_line is not None:
             s.write(("Kp_line:   {}\r\n".format(self._Kp_line.get())).encode())
             s.write(("Ki_line:   {}\r\n".format(self._Ki_line.get())).encode())
@@ -779,9 +774,6 @@ class task_tuning_ui:
                 s.write(("{}".format(dv) if dv is not None else "NA").encode())
                 s.write(b"  follow_en=")
                 s.write(("{}".format(fe) if fe is not None else "NA").encode())
-                if self._line_ok is not None:
-                    s.write(b"  line_ok=")
-                    s.write(("{}".format(int(self._line_ok.get()))).encode())
 
                 # IMU stream (optional)
                 if self._imu_heading is not None:

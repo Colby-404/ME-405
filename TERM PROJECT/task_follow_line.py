@@ -2,27 +2,20 @@
 # Outer-loop line-following task for ME405 Romi
 #
 # Normal mode:
-#   - reads line_err Share
-#   - uses optional line_ok Share
+#   - uses line_err for steering
 #   - writes spL / spR
 #
-# Added ordered scripted recovery mode:
-#   1st line loss:
-#       - go forward
-#       - turn right 90 deg
-#       - continue straight until line is seen again
-#   2nd line loss:
-#       - go forward
-#       - turn 180 deg
-#       - turn another 180 deg  (total 360)
-#       - go forward
-#       - continue straight until line is seen again
+# Scripted mode:
+#   - line_ok is NOT used to trigger scripts
+#   - stage 0 starts when encoder travel since follow-enable reaches stage0_trigger_counts
+#   - stage 1 starts when encoder travel since follow-enable reaches stage1_trigger_counts
 #
-# After that, normal line following continues.
+# Scripted actions:
+#   Stage 0: go forward -> turn right -> return to normal line follow
+#   Stage 1: go forward -> 180 -> 180 -> go forward -> return to normal line follow
 
 import micropython
 
-# MicroPython timing compatibility
 try:
     import time
     ticks_us = time.ticks_us
@@ -34,13 +27,9 @@ from task_share import Share
 
 S0_IDLE           = micropython.const(0)
 S1_RUN            = micropython.const(1)
-
-# Stage 0 script: forward -> right 90 -> straight until line found
 S2_STAGE0_FWD     = micropython.const(2)
 S3_STAGE0_TURN90  = micropython.const(3)
 S4_STAGE0_EXIT    = micropython.const(4)
-
-# Stage 1 script: forward -> 180 -> 180 -> forward -> straight until line found
 S5_STAGE1_FWD1    = micropython.const(5)
 S6_STAGE1_TURN_A  = micropython.const(6)
 S7_STAGE1_TURN_B  = micropython.const(7)
@@ -61,34 +50,31 @@ class task_follow_line:
                  sat_dv: float = 400.0,
                  period_ms: int = 20,
 
-                 # Existing optionals
                  line_ok: Share = None,
                  sp_min: float = -3000.0,
                  sp_max: float = 3000.0,
 
-                 # Recovery inputs
                  heading_deg: Share = None,
                  posL_meas: Share = None,
                  posR_meas: Share = None,
                  use_line_recovery: bool = False,
 
-                 # Stage 0 tuning
-                 lost_forward_counts: float = 150.0,   # forward distance before 90 turn
-                 turn_right_deg: float = 90.0,         # right turn angle
+                 lost_forward_counts: float = 150.0,
+                 turn_right_deg: float = 90.0,
 
-                 # Stage 1 tuning
-                 stage1_forward1_counts: float = 150.0, # first forward move
-                 stage1_turn_half_deg: float = 180.0,   # use 180 + 180 for full 360
-                 stage1_forward2_counts: float = 150.0, # second forward move
+                 stage1_forward1_counts: float = 150.0,
+                 stage1_turn_half_deg: float = 180.0,
+                 stage1_forward2_counts: float = 150.0,
 
-                 # Shared recovery tuning
                  heading_tol_deg: float = 3.0,
                  recovery_fwd_speed: float = None,
                  recovery_turn_speed: float = 450.0,
                  line_lost_confirm_ms: float = 150.0,
                  line_found_confirm_ms: float = 120.0,
 
-                 # ---- OPTIONALS ----
+                 stage0_trigger_counts: float = 3000.0,
+                 stage1_trigger_counts: float = 7000.0,
+
                  Kd_line: Share = None,
                  deriv_on_measurement: bool = True,
                  output_sign: int = 1,
@@ -106,7 +92,6 @@ class task_follow_line:
                  sensor_mean_min: float = 1.0,
                  sensor_error_scale_with_speed: bool = True):
 
-        # Required shares
         self._en   = enable_follow
         self._vnom = v_nom
         self._Kp   = Kp_line
@@ -118,7 +103,6 @@ class task_follow_line:
         self._dv_out = dv_out
         self._line_ok = line_ok
 
-        # Output shaping / limits
         self._sat_dv = float(sat_dv) if sat_dv is not None else None
         self._dynamic_sat = bool(dynamic_sat)
         self._sat_ratio = float(sat_ratio)
@@ -126,25 +110,21 @@ class task_follow_line:
         self._sp_max = float(sp_max)
         self._output_sign = 1 if output_sign >= 0 else -1
 
-        # Timing / state
         self._state = S0_IDLE
         self._period_ms = int(period_ms)
         self._was_enabled = False
         self._start_t_us = ticks_us()
         self._prev_t_us = ticks_us()
 
-        # PID state
         self._i_term = 0.0
         self._prev_err = 0.0
         self._prev_meas = 0.0
         self._deriv_on_measurement = bool(deriv_on_measurement)
 
-        # Optional logging
         self._centroid_q = centroid_q
         self._centroid_t_q = centroid_t_q
         self._centroid_out = centroid_out
 
-        # Optional direct 2x3 sensor mode
         self._llf = llf
         self._rlf = rlf
         self._use_sensor_mode = (llf is not None and rlf is not None)
@@ -153,49 +133,40 @@ class task_follow_line:
         self._w_mid = float(middle_weight)
         self._w_out = float(outer_weight)
         self._w_total = self._w_in + self._w_mid + self._w_out
-
         self._sensor_total_min = float(sensor_total_min)
         self._sensor_mean_min = float(sensor_mean_min)
         self._sensor_error_scale_with_speed = bool(sensor_error_scale_with_speed)
 
-        # Recovery data
         self._heading = heading_deg
         self._posL_meas = posL_meas
         self._posR_meas = posR_meas
         self._use_line_recovery = bool(use_line_recovery)
 
-        # Stage 0 tuning
         self._lost_forward_counts = float(lost_forward_counts)
         self._turn_right_deg = float(turn_right_deg)
-
-        # Stage 1 tuning
         self._stage1_forward1_counts = float(stage1_forward1_counts)
         self._stage1_turn_half_deg = float(stage1_turn_half_deg)
         self._stage1_forward2_counts = float(stage1_forward2_counts)
-
-        # Shared recovery tuning
         self._heading_tol_deg = float(heading_tol_deg)
         self._recovery_fwd_speed = recovery_fwd_speed
         self._recovery_turn_speed = float(recovery_turn_speed)
 
-        # Script runtime state
-        self._course_stage = 0   # 0 = first special section next, 1 = second special section next, 2 = both done
+        # accepted for compatibility, not used for script triggering anymore
+        self._line_lost_confirm_ms = float(line_lost_confirm_ms)
+        self._line_found_confirm_ms = float(line_found_confirm_ms)
+
+        self._stage0_trigger_counts = float(stage0_trigger_counts)
+        self._stage1_trigger_counts = float(stage1_trigger_counts)
+
+        self._course_stage = 0
         self._lost_heading = 0.0
         self._lost_posL = 0
         self._lost_posR = 0
         self._target_heading = 0.0
-
-        # Debounce / persistence filtering for raw line validity
-        self._line_lost_confirm_us = int(float(line_lost_confirm_ms) * 1000.0)
-        self._line_found_confirm_us = int(float(line_found_confirm_ms) * 1000.0)
-        self._line_filter_initialized = False
-        self._raw_line_valid = True
-        self._filtered_line_valid = True
-        self._line_edge_t_us = ticks_us()
-
-    # ------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------
+        self._start_posL = 0
+        self._start_posR = 0
+        self._stage0_started = False
+        self._stage1_started = False
 
     def _reset(self):
         self._i_term = 0.0
@@ -203,18 +174,14 @@ class task_follow_line:
         self._prev_meas = 0.0
         self._prev_t_us = ticks_us()
         self._start_t_us = self._prev_t_us
-
         self._lost_heading = 0.0
         self._lost_posL = 0
         self._lost_posR = 0
         self._target_heading = 0.0
-
-        self._line_filter_initialized = False
-        self._raw_line_valid = True
-        self._filtered_line_valid = True
-        self._line_edge_t_us = ticks_us()
-
-        # Reset course script order when follow is re-enabled
+        self._start_posL = self._get_posL()
+        self._start_posR = self._get_posR()
+        self._stage0_started = False
+        self._stage1_started = False
         self._course_stage = 0
 
     def _clamp(self, x, lo, hi):
@@ -255,7 +222,7 @@ class task_follow_line:
         except Exception:
             return 0
 
-    def _latch_line_loss(self):
+    def _latch_script_start(self):
         self._lost_heading = self._get_heading_deg()
         self._lost_posL = self._get_posL()
         self._lost_posR = self._get_posR()
@@ -264,6 +231,11 @@ class task_follow_line:
         dL = abs(self._get_posL() - self._lost_posL)
         dR = abs(self._get_posR() - self._lost_posR)
         return 0.5 * (dL + dR)
+
+    def _avg_counts_since_start(self):
+        dL = self._get_posL() - self._start_posL
+        dR = self._get_posR() - self._start_posR
+        return abs(0.5 * (dL + dR))
 
     def _recovery_ready(self):
         return (
@@ -284,14 +256,12 @@ class task_follow_line:
                 self._centroid_out.put(float(centroid_value))
             except Exception:
                 pass
-
         if self._centroid_q is not None:
             try:
                 if not self._centroid_q.full():
                     self._centroid_q.put(float(centroid_value))
             except Exception:
                 pass
-
         if self._centroid_t_q is not None:
             try:
                 if not self._centroid_t_q.full():
@@ -306,25 +276,19 @@ class task_follow_line:
             Rin, Rmid, Rout = self._rlf.get_values()
         except Exception:
             return (False, 0.0, 0.0)
-
         left = self._w_in * Lin + self._w_mid * Lmid + self._w_out * Lout
         right = self._w_in * Rin + self._w_mid * Rmid + self._w_out * Rout
-
         raw_total = (Lin + Lmid + Lout + Rin + Rmid + Rout)
         if raw_total <= 0:
             return (False, 0.0, 0.0)
-
         left_mean = left / self._w_total
         right_mean = right / self._w_total
         mean = (left_mean + right_mean) * 0.5
         centroid = (left + right) / raw_total
-
         valid = (raw_total >= self._sensor_total_min) and (mean >= self._sensor_mean_min)
         if not valid:
             return (False, 0.0, centroid)
-
         error = left - right
-
         if mean <= 0:
             err = 0.0
         else:
@@ -332,27 +296,22 @@ class task_follow_line:
                 err = (error * float(v_nom_value)) / mean
             else:
                 err = error / mean
-
         return (True, float(err), float(centroid))
 
     def _get_line_measurement(self, v_nom_value):
         if self._use_sensor_mode:
             valid, err, centroid = self._compute_error_from_weighted_sensors(v_nom_value)
-
             try:
                 self._err.put(float(err))
             except Exception:
                 pass
-
             if self._line_ok is not None:
                 try:
                     self._line_ok.put(1 if valid else 0)
                 except Exception:
                     pass
-
             self._log_centroid(centroid)
             return valid, float(err)
-
         if self._line_ok is not None:
             try:
                 valid = bool(self._line_ok.get())
@@ -360,263 +319,156 @@ class task_follow_line:
                 valid = True
         else:
             valid = True
-
         try:
             err = float(self._err.get())
         except Exception:
             err = 0.0
-
         if (self._centroid_q is not None) or (self._centroid_t_q is not None) or (self._centroid_out is not None):
             self._log_centroid(err)
-
         return valid, err
-
-    def _update_line_valid_filtered(self, raw_valid):
-        """Debounce raw line validity so brief flicker does not trigger scripts."""
-        now = ticks_us()
-        raw_valid = bool(raw_valid)
-
-        if not self._line_filter_initialized:
-            self._line_filter_initialized = True
-            self._raw_line_valid = raw_valid
-            self._filtered_line_valid = raw_valid
-            self._line_edge_t_us = now
-            return self._filtered_line_valid
-
-        if raw_valid != self._raw_line_valid:
-            self._raw_line_valid = raw_valid
-            self._line_edge_t_us = now
-            return self._filtered_line_valid
-
-        stable_us = ticks_diff(now, self._line_edge_t_us)
-
-        if raw_valid != self._filtered_line_valid:
-            needed_us = self._line_found_confirm_us if raw_valid else self._line_lost_confirm_us
-            if stable_us >= needed_us:
-                self._filtered_line_valid = raw_valid
-
-        return self._filtered_line_valid
-
-    # ------------------------------------------------------------
-    # Main task generator
-    # ------------------------------------------------------------
 
     def run(self):
         while True:
             enabled = bool(self._en.get())
-
-            # Rising edge: reset controller/timing
             if enabled and not self._was_enabled:
                 self._reset()
-
                 try:
                     e0 = float(self._err.get())
                 except Exception:
                     e0 = 0.0
                 self._prev_meas = e0
                 self._prev_err = e0
-
             self._was_enabled = enabled
             v = float(self._vnom.get())
 
             if not enabled:
                 self._spL.put(v)
                 self._spR.put(v)
-
                 if self._dv_out is not None:
                     self._dv_out.put(0.0)
-
                 self._i_term = 0.0
                 self._state = S0_IDLE
                 yield self._state
                 continue
 
-            # Get line error + validity
-            raw_line_valid, err = self._get_line_measurement(v)
-            line_valid = self._update_line_valid_filtered(raw_line_valid)
+            _raw_line_valid, err = self._get_line_measurement(v)
+            counts_from_start = self._avg_counts_since_start()
 
-            # --------------------------------------------------------
-            # ACTIVE SCRIPT HANDLING
-            # --------------------------------------------------------
-
-            # Stage 0: exit straight until line is found again
             if self._state == S4_STAGE0_EXIT:
-                fwd = abs(float(v)) if self._recovery_fwd_speed is None else abs(float(self._recovery_fwd_speed))
-                self._spL.put(fwd)
-                self._spR.put(fwd)
-                if self._dv_out is not None:
-                    self._dv_out.put(0.0)
-
-                if line_valid:
-                    self._course_stage = 1
-                    self._state = S1_RUN
-                    self._i_term = 0.0
-                    self._prev_err = err
-                    self._prev_meas = err
-                    self._prev_t_us = ticks_us()
+                self._course_stage = 1
+                self._state = S1_RUN
+                self._i_term = 0.0
+                self._prev_err = err
+                self._prev_meas = err
+                self._prev_t_us = ticks_us()
                 yield self._state
                 continue
 
-            # Stage 1: exit straight until line is found again
             if self._state == S9_STAGE1_EXIT:
-                fwd = abs(float(v)) if self._recovery_fwd_speed is None else abs(float(self._recovery_fwd_speed))
-                self._spL.put(fwd)
-                self._spR.put(fwd)
-                if self._dv_out is not None:
-                    self._dv_out.put(0.0)
-
-                if line_valid:
-                    self._course_stage = 2
-                    self._state = S1_RUN
-                    self._i_term = 0.0
-                    self._prev_err = err
-                    self._prev_meas = err
-                    self._prev_t_us = ticks_us()
+                self._course_stage = 2
+                self._state = S1_RUN
+                self._i_term = 0.0
+                self._prev_err = err
+                self._prev_meas = err
+                self._prev_t_us = ticks_us()
                 yield self._state
                 continue
 
-            # Stage 0: forward before 90 turn
             if self._state == S2_STAGE0_FWD:
                 fwd = abs(float(v)) if self._recovery_fwd_speed is None else abs(float(self._recovery_fwd_speed))
                 self._spL.put(fwd)
                 self._spR.put(fwd)
                 if self._dv_out is not None:
                     self._dv_out.put(0.0)
-
                 if self._avg_counts_since_loss() >= self._lost_forward_counts:
                     self._target_heading = self._wrap_deg(self._lost_heading - self._turn_right_deg)
                     self._state = S3_STAGE0_TURN90
-
                 yield self._state
                 continue
 
-            # Stage 0: right 90 turn
             if self._state == S3_STAGE0_TURN90:
                 turn = abs(self._recovery_turn_speed)
                 cur_h = self._get_heading_deg()
                 hdg_err = self._wrap_deg(self._target_heading - cur_h)
-
-                # Right turn in place
-                # If it turns the wrong way, swap the signs on spL/spR.
                 self._spL.put(+turn)
                 self._spR.put(-turn)
                 if self._dv_out is not None:
                     self._dv_out.put(-turn)
-
                 if abs(hdg_err) <= self._heading_tol_deg:
                     self._state = S4_STAGE0_EXIT
-
                 yield self._state
                 continue
 
-            # Stage 1: first forward move
             if self._state == S5_STAGE1_FWD1:
                 fwd = abs(float(v)) if self._recovery_fwd_speed is None else abs(float(self._recovery_fwd_speed))
                 self._spL.put(fwd)
                 self._spR.put(fwd)
                 if self._dv_out is not None:
                     self._dv_out.put(0.0)
-
                 if self._avg_counts_since_loss() >= self._stage1_forward1_counts:
                     self._target_heading = self._wrap_deg(self._lost_heading - self._stage1_turn_half_deg)
                     self._state = S6_STAGE1_TURN_A
-
                 yield self._state
                 continue
 
-            # Stage 1: first 180 turn
             if self._state == S6_STAGE1_TURN_A:
                 turn = abs(self._recovery_turn_speed)
                 cur_h = self._get_heading_deg()
                 hdg_err = self._wrap_deg(self._target_heading - cur_h)
-
                 self._spL.put(+turn)
                 self._spR.put(-turn)
                 if self._dv_out is not None:
                     self._dv_out.put(-turn)
-
                 if abs(hdg_err) <= self._heading_tol_deg:
                     self._target_heading = self._wrap_deg(self._target_heading - self._stage1_turn_half_deg)
                     self._state = S7_STAGE1_TURN_B
-
                 yield self._state
                 continue
 
-            # Stage 1: second 180 turn (total 360)
             if self._state == S7_STAGE1_TURN_B:
                 turn = abs(self._recovery_turn_speed)
                 cur_h = self._get_heading_deg()
                 hdg_err = self._wrap_deg(self._target_heading - cur_h)
-
                 self._spL.put(+turn)
                 self._spR.put(-turn)
                 if self._dv_out is not None:
                     self._dv_out.put(-turn)
-
                 if abs(hdg_err) <= self._heading_tol_deg:
                     self._lost_posL = self._get_posL()
                     self._lost_posR = self._get_posR()
                     self._state = S8_STAGE1_FWD2
-
                 yield self._state
                 continue
 
-            # Stage 1: second forward move
             if self._state == S8_STAGE1_FWD2:
                 fwd = abs(float(v)) if self._recovery_fwd_speed is None else abs(float(self._recovery_fwd_speed))
                 self._spL.put(fwd)
                 self._spR.put(fwd)
                 if self._dv_out is not None:
                     self._dv_out.put(0.0)
-
                 if self._avg_counts_since_loss() >= self._stage1_forward2_counts:
                     self._state = S9_STAGE1_EXIT
-
                 yield self._state
                 continue
 
-            # --------------------------------------------------------
-            # START SCRIPT ON LINE LOSS
-            # --------------------------------------------------------
-            if not line_valid:
-                self._i_term = 0.0
+            if self._recovery_ready():
+                if (self._course_stage == 0) and (not self._stage0_started):
+                    if counts_from_start >= self._stage0_trigger_counts:
+                        self._stage0_started = True
+                        self._i_term = 0.0
+                        self._latch_script_start()
+                        self._state = S2_STAGE0_FWD
+                        yield self._state
+                        continue
+                elif (self._course_stage == 1) and (not self._stage1_started):
+                    if counts_from_start >= self._stage1_trigger_counts:
+                        self._stage1_started = True
+                        self._i_term = 0.0
+                        self._latch_script_start()
+                        self._state = S5_STAGE1_FWD1
+                        yield self._state
+                        continue
 
-                # If recovery not wired in, preserve straight behavior
-                if not self._recovery_ready():
-                    self._spL.put(v)
-                    self._spR.put(v)
-                    if self._dv_out is not None:
-                        self._dv_out.put(0.0)
-                    self._state = S0_IDLE
-                    yield self._state
-                    continue
-
-                self._latch_line_loss()
-
-                # First special section
-                if self._course_stage == 0:
-                    self._state = S2_STAGE0_FWD
-                    yield self._state
-                    continue
-
-                # Second special section
-                elif self._course_stage == 1:
-                    self._state = S5_STAGE1_FWD1
-                    yield self._state
-                    continue
-
-                # After both scripted sections are done, preserve straight behavior on later losses
-                else:
-                    self._spL.put(v)
-                    self._spR.put(v)
-                    if self._dv_out is not None:
-                        self._dv_out.put(0.0)
-                    yield self._state
-                    continue
-
-            # --------------------------------------------------------
-            # NORMAL LINE FOLLOW
-            # --------------------------------------------------------
             if self._state != S1_RUN:
                 self._i_term = 0.0
                 self._prev_err = err
@@ -624,7 +476,6 @@ class task_follow_line:
                 self._prev_t_us = ticks_us()
 
             self._state = S1_RUN
-
             now_us = ticks_us()
             dt_us = ticks_diff(now_us, self._prev_t_us)
             self._prev_t_us = now_us
@@ -644,7 +495,6 @@ class task_follow_line:
 
             P = kp * err
             D = kd * derr
-
             sat = self._active_sat(v)
             sat_enabled = (sat is not None) and (sat > 0)
 
@@ -652,7 +502,6 @@ class task_follow_line:
                 i_candidate = self._i_term + err * dt
             else:
                 i_candidate = self._i_term
-
             u_unsat = P + ki * self._i_term + D
             u_candidate = P + ki * i_candidate + D
 
@@ -662,7 +511,6 @@ class task_follow_line:
                     dv = u_candidate
                 else:
                     dv = u_unsat
-
                 if dv > sat:
                     dv = sat
                 elif dv < -sat:
@@ -680,13 +528,10 @@ class task_follow_line:
 
             spL = self._clamp(spL, self._sp_min, self._sp_max)
             spR = self._clamp(spR, self._sp_min, self._sp_max)
-
             self._spL.put(float(spL))
             self._spR.put(float(spR))
             if self._dv_out is not None:
                 self._dv_out.put(float(dv))
-
             self._prev_err = err
             self._prev_meas = err
-
             yield self._state
