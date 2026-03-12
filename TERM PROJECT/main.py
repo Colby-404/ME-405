@@ -36,7 +36,7 @@ gc.collect()
 # USB
 # -----------------------------
 ser = pyb.USB_VCP()
-ser.write(b"\r\n*** main.py started (encoder-trigger scripted follow, no line_ok) ***\r\n")
+ser.write(b"\r\n*** main.py started (two-trigger encoder tuning + scripted follow) ***\r\n")
 pyb.delay(50)
 
 # -----------------------------
@@ -124,7 +124,13 @@ v_nom     = Share("f", name="V_nom")      # counts/s
 Kp_line   = Share("f", name="Line Kp")
 Ki_line   = Share("f", name="Line Ki")
 line_err  = Share("f", name="Line Error")
+line_ok   = Share("B", name="Line OK")
 dv_out    = Share("f", name="dv_out")
+
+# Script debug shares (for encoder-based scripted tuning)
+script_state = Share("B", name="Script State")
+script_total_counts = Share("f", name="Script Total Counts")
+script_segment_counts = Share("f", name="Script Segment Counts")
 
 # Calibration command shares (line sensor)
 cal_cmd  = Share("B", name="Cal Cmd")
@@ -161,7 +167,11 @@ Kp_line.put(0.7)
 Ki_line.put(0.0)
 
 line_err.put(0.0)
+line_ok.put(1)
 dv_out.put(0.0)
+script_state.put(0)
+script_total_counts.put(0.0)
+script_segment_counts.put(0.0)
 
 cal_cmd.put(0)
 cal_done.put(0)
@@ -238,6 +248,7 @@ imuTask = task_imu(
 def task_read_line():
     OVERSAMPLE = 4
     CAL_SAMPLES = 80
+    last_valid_err = 0.0
 
     while True:
         try:
@@ -281,19 +292,25 @@ def task_read_line():
             if total > 0:
                 pos = weighted_sum // total
                 center = (qtr.count - 1) * 1000 // 2
-                line_err.put(float(pos - center))
+                last_valid_err = float(pos - center)
+                line_err.put(last_valid_err)
+                line_ok.put(1)
             else:
-                line_err.put(0.0)
+                line_err.put(last_valid_err)
+                line_ok.put(0)
 
         except Exception as e:
-            line_err.put(0.0)
+            line_err.put(last_valid_err)
+            line_ok.put(0)
             print("task_read_line error:", e)
 
         yield 0
 
 # -----------------------------
 # Outer-loop line-follow task (writes setpointL/setpointR)
-# Scripts are triggered by HARD-CODED encoder travel from follow-enable.
+# Encoder thresholds are measured from follow-enable.
+# - First threshold marks the TUNE_ZONE for Kp/Ki tuning
+# - Second threshold starts the scripted maneuver sequence once
 # -----------------------------
 followTask = task_follow_line(
     enable_follow=follow_en,
@@ -301,6 +318,7 @@ followTask = task_follow_line(
     Kp_line=Kp_line,
     Ki_line=Ki_line,
     line_err=line_err,
+    line_ok=line_ok,
     spL=setpointL,
     spR=setpointR,
     dv_out=dv_out,
@@ -309,43 +327,39 @@ followTask = task_follow_line(
     sp_min=-3000.0,
     sp_max=3000.0,
 
-    heading_deg=imu_heading,
+    # Encoder positions are used both for trigger distance and scripted segments
     posL_meas=posL,
     posR_meas=posR,
-    use_line_recovery=True,
+    use_line_recovery=False,
+    enable_encoder_script=True,
 
-    # Script 0:
-    # forward distance inside script 0 before starting the right turn
-    lost_forward_counts=600.0,
+    # First encoder threshold: just mark a tuning zone in the live stream.
+    # The robot keeps line-following here, but the state changes to TUNE_ZONE
+    # so you know you are in the section where wheel Kp/Ki can be adjusted.
+    tune_trigger_counts=8000.0,
 
-    # Script 0:
-    # right-turn angle in degrees
-    turn_right_deg=260.0,
+    # Second encoder threshold: start the scripted maneuver once.
+    stage0_trigger_counts=12000.0,
 
-    # Script 1:
-    # forward distance before beginning the 360 sequence
-    stage1_forward1_counts=800.0,
+    # Encoder-only scripted sequence:
+    #   small right turn -> straight -> 90-ish right turn -> straight
+    small_right_counts=300.0,
+    stage0_forward1_counts=2000.0,
+    stage0_turn2_counts=260.0,
+    stage0_forward2_counts=5000.0,
 
-    # Script 1:
-    # half-turn angle used twice to make a full 360 (180 + 180)
-    stage1_turn_half_deg=180.0,
-
-    # Script 1:
-    # forward distance after the 360 sequence before returning to normal follow
-    stage1_forward2_counts=150.0,
-
-    # Shared scripted-motion tuning
-    heading_tol_deg=3.0,
+    # Speeds used during scripted motion
     recovery_fwd_speed=700.0,
     recovery_turn_speed=450.0,
 
-    # Compatibility only; not used to trigger scripts anymore
-    line_lost_confirm_ms=500.0,
+    # Safe lost-line behavior while in normal follow mode
+    line_lost_confirm_ms=120.0,
     line_found_confirm_ms=120.0,
 
-    # Encoder travel from follow-enable that starts each scripted section
-    stage0_trigger_counts=11300.0,
-    stage1_trigger_counts=10000.0
+    # Optional debug shares for live UI streaming
+    script_state_share=script_state,
+    script_total_counts_share=script_total_counts,
+    script_segment_counts_share=script_segment_counts,
 )
 
 # -----------------------------
@@ -364,6 +378,16 @@ tuningTask = task_tuning_ui(
     dv_out=dv_out,
     leftMotorGo=motorLGo,
     rightMotorGo=motorRGo,
+    posL=posL,
+    posR=posR,
+    omegaL=omegaL,
+    omegaR=omegaR,
+    setpointL=setpointL,
+    setpointR=setpointR,
+    script_state=script_state,
+    script_total_counts=script_total_counts,
+    script_segment_counts=script_segment_counts,
+    line_ok=line_ok,
     imu_heading=imu_heading,
     imu_yawrate=imu_yawrate,
     imu_calraw=imu_calraw,
