@@ -1,22 +1,4 @@
 # task_follow_line.py
-# Encoder-triggered scripted line follow for ME405 Romi
-#
-# Normal mode:
-#   - uses line_err for steering
-#   - if the line is lost for more than line_lost_confirm_ms, it stops safely
-#   - when the line is found again for line_found_confirm_ms, it resumes
-#   - when total encoder travel reaches tune_trigger_counts, the state changes
-#     to TUNE_ZONE so you can adjust wheel Kp/Ki while still line-following
-#
-# Scripted mode (encoder-only, runs once):
-#   1) small right turn
-#   2) straight
-#   3) 90-ish right turn
-#   4) straight
-#
-# NEW:
-#   - can automatically change WHEEL Kp/Ki at tune_trigger_counts
-#   - can automatically change WHEEL Kp/Ki again at stage0_trigger_counts
 
 import micropython
 
@@ -51,23 +33,13 @@ class task_follow_line:
                  spR: Share,
                  dv_out: Share = None,
                  sat_dv: float = 400.0,
-                 period_ms: int = 20,
                  line_ok: Share = None,
                  sp_min: float = -3000.0,
                  sp_max: float = 3000.0,
 
-                 # legacy / compatibility args
-                 heading_deg: Share = None,
                  posL_meas: Share = None,
                  posR_meas: Share = None,
-                 use_line_recovery: bool = False,
                  enable_encoder_script: bool = True,
-                 lost_forward_counts: float = 150.0,
-                 turn_right_deg: float = 90.0,
-                 stage1_forward1_counts: float = 150.0,
-                 stage1_turn_half_deg: float = 180.0,
-                 stage1_forward2_counts: float = 150.0,
-                 heading_tol_deg: float = 3.0,
 
                  # encoder-script tuning
                  recovery_fwd_speed: float = None,
@@ -76,9 +48,7 @@ class task_follow_line:
                  line_found_confirm_ms: float = 120.0,
                  tune_trigger_counts: float = 8000.0,
                  stage0_trigger_counts: float = 10000.0,
-                 stage1_trigger_counts: float = 7000.0,
                  small_right_counts: float = 120.0,
-                 small_right2_counts=None,
                  stage0_forward1_counts: float = 500.0,
                  stage0_turn2_counts: float = 260.0,
                  stage0_forward2_counts: float = 600.0,
@@ -137,7 +107,6 @@ class task_follow_line:
         self._output_sign = 1 if output_sign >= 0 else -1
 
         self._state = S0_IDLE
-        self._period_ms = int(period_ms)
         self._was_enabled = False
         self._start_t_us = ticks_us()
         self._prev_t_us = self._start_t_us
@@ -179,7 +148,6 @@ class task_follow_line:
         self._stage0_turn2_counts = float(stage0_turn2_counts)
         self._stage0_forward2_counts = float(stage0_forward2_counts)
 
-        # NEW: wheel gain scheduling
         self._wheel_Kp = wheel_Kp
         self._wheel_Ki = wheel_Ki
         self._base_wheel_Kp = base_wheel_Kp
@@ -227,11 +195,8 @@ class task_follow_line:
         self._found_since_us = None
         self._start_sync_cycles = 2
 
-        # NEW: reset wheel gain scheduling flags
         self._tune_gains_applied = False
         self._script_gains_applied = False
-
-        # NEW: apply base wheel gains at start of each run
         self._apply_wheel_gains(self._base_wheel_Kp, self._base_wheel_Ki)
 
     def _clamp(self, x, lo, hi):
@@ -460,7 +425,6 @@ class task_follow_line:
             counts_from_start = self._avg_counts_since_start()
             counts_in_segment = self._avg_counts_since_segment()
 
-            # NEW: apply wheel gains automatically at encoder thresholds
             if (not self._tune_gains_applied) and (counts_from_start >= self._tune_trigger_counts):
                 self._apply_wheel_gains(self._tune_wheel_Kp, self._tune_wheel_Ki)
                 self._tune_gains_applied = True
@@ -471,9 +435,6 @@ class task_follow_line:
 
             tune_zone_active = (counts_from_start >= self._tune_trigger_counts) and (not self._script_started)
 
-            # -----------------------------
-            # Script exit: return to normal follow
-            # -----------------------------
             if self._state == S8_SCRIPT_EXIT:
                 self._script_done = True
                 self._state = S1_RUN
@@ -485,9 +446,6 @@ class task_follow_line:
                 yield self._state
                 continue
 
-            # -----------------------------
-            # Scripted encoder-only sequence
-            # -----------------------------
             if self._state == S3_TURN_SMALL:
                 turn = abs(float(self._recovery_turn_speed))
                 self._command_turn_right(turn)
@@ -535,9 +493,6 @@ class task_follow_line:
                 yield self._state
                 continue
 
-            # -----------------------------
-            # Start scripted sequence once, at encoder trigger
-            # -----------------------------
             if self._script_ready() and (not self._script_started) and (not self._script_done):
                 if counts_from_start >= self._stage0_trigger_counts:
                     self._script_started = True
@@ -591,8 +546,7 @@ class task_follow_line:
                     yield self._state
                     continue
 
-                # short dropout: hold last valid error briefly
-                ctrl_err = self._last_valid_err
+                ctrl_err = self._last_valid_err  # hold last valid error on short dropout
 
             if self._state != normal_state:
                 self._i_term = 0.0

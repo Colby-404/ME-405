@@ -1,7 +1,4 @@
 # main.py
-# Internal PI inside task_motor, line-follow architecture preserved
-# IMU integrated into tuning UI (enable/mode/zero/save) and published via task_imu
-# NOTE: State estimator is intentionally omitted until IMU + line-follow are stable.
 
 import gc
 import pyb
@@ -18,7 +15,7 @@ from encoder import encoder
 gc.collect()
 from task_motor import task_motor
 gc.collect()
-from task_share import Share, Queue
+from task_share import Share
 gc.collect()
 from cotask import Task, task_list
 gc.collect()
@@ -51,37 +48,19 @@ pwmR = tim4.channel(3, pyb.Timer.PWM, pin=pyb.Pin('PB8'))
 motorL = motor_driver(pwmL, 'PC0', 'PC1')
 motorR = motor_driver(pwmR, 'PC2', 'PC3')
 
-# NOTE: If a wheel "runs away" or oscillates badly, flip the corresponding invert flag.
 encL = encoder(2, 'PA0', 'PA1', invert=False)
 encR = encoder(1, 'PA8', 'PA9', invert=False)
 
 # -----------------------------
-# IMU setup (BNO055 over I2C2)
-# Wiring:
-#   SCL -> PB13
-#   SDA -> PB14
+# IMU (BNO055, I2C2: SCL=PB13, SDA=PB14)
 # -----------------------------
 imu = BNO055.from_softi2c('PB13', 'PB14', freq=100000, addr=0x28)
-
-# - IMUPLUS: accel+gyro only (no magnetometer)
-# - NDOF: accel+gyro+mag
-IMU_FUSION_MODE = BNO055.MODE_IMUPLUS
+IMU_FUSION_MODE = BNO055.MODE_IMUPLUS  # accel+gyro only (no mag)
 
 # -----------------------------
-# Line sensor setup (QTR-MD-08A Analog)
+# Line sensor (QTR-MD-08A Analog)
 # -----------------------------
-ADC_PINS = [
-    'PC5',  # OUT7
-    'PC4',  # OUT6
-    'PB1',  # OUT5
-    'PB0',  # OUT4
-    'PA7',  # OUT3
-    'PA6',  # OUT2
-    'PA5',  # OUT1
-    'PA4',  # OUT0
-]
-
-# If QTR emitter/CTRL pin is wired, set it here (must NOT be one of ADC_PINS)
+ADC_PINS = ['PC5', 'PC4', 'PB1', 'PB0', 'PA7', 'PA6', 'PA5', 'PA4']
 EMITTER_PIN = 'PC8'
 
 qtr = QTRSensorsAnalog(ADC_PINS, emitter_pin=EMITTER_PIN, invert=False)
@@ -96,26 +75,16 @@ if hasattr(qtr, 'emitters_on'):
 # -----------------------------
 motorLGo = Share("B", name="Left Enable")
 motorRGo = Share("B", name="Right Enable")
-
-# Wheel PI gains (used directly by task_motor internal PI)
-Kp = Share("f", name="Wheel Kp")
-Ki = Share("f", name="Wheel Ki")
-
-# Per-wheel velocity setpoints (counts/s)
+Kp       = Share("f", name="Wheel Kp")
+Ki       = Share("f", name="Wheel Ki")
 setpointL = Share("f", name="Setpoint L")
 setpointR = Share("f", name="Setpoint R")
-
-# Measured wheel states
-omegaL = Share("f", name="Omega L")
-omegaR = Share("f", name="Omega R")
-posL = Share("l", name="Pos L")
-posR = Share("l", name="Pos R")
-
-# Effort shares kept for visibility/debug/UI compatibility
-effortL = Share("h", name="Left Effort")
-effortR = Share("h", name="Right Effort")
-
-# Kept for compatibility with the current task_tuning_ui implementation.
+omegaL   = Share("f", name="Omega L")
+omegaR   = Share("f", name="Omega R")
+posL     = Share("l", name="Pos L")
+posR     = Share("l", name="Pos R")
+effortL  = Share("h", name="Left Effort")
+effortR  = Share("h", name="Right Effort")
 start_user = Share("B", name="Start User Task")
 
 # Outer-loop shares
@@ -161,7 +130,6 @@ v_nom.put(700.0)
 setpointL.put(v_nom.get())
 setpointR.put(v_nom.get())
 
-# Better to start disabled, then enable from UI when ready
 follow_en.put(0)
 Kp_line.put(0.7)
 Ki_line.put(0.0)
@@ -191,21 +159,11 @@ imu_yawrate.put(0.0)
 imu_calraw.put(0)
 
 # -----------------------------
-# Queues (wheel logging)
-# -----------------------------
-dataValuesL = Queue("f", 100, name="Left Data Buffer")
-timeValuesL = Queue("L", 100, name="Left Time Buffer")
-
-dataValuesR = Queue("f", 100, name="Right Data Buffer")
-timeValuesR = Queue("L", 100, name="Right Time Buffer")
-
-# -----------------------------
-# Motor tasks (INTERNAL PI ENABLED)
+# Motor tasks
 # -----------------------------
 leftMotorTask = task_motor(
     motorL, encL,
     motorLGo, effortL, posL, omegaL,
-    dataValuesL, timeValuesL,
     setpoint=setpointL,
     Kp=Kp,
     Ki=Ki,
@@ -216,7 +174,6 @@ leftMotorTask = task_motor(
 rightMotorTask = task_motor(
     motorR, encR,
     motorRGo, effortR, posR, omegaR,
-    dataValuesR, timeValuesR,
     setpoint=setpointR,
     Kp=Kp,
     Ki=Ki,
@@ -307,11 +264,35 @@ def task_read_line():
         yield 0
 
 # -----------------------------
-# Outer-loop line-follow task (writes setpointL/setpointR)
-# Encoder thresholds are measured from follow-enable.
-# - First threshold marks the TUNE_ZONE for Kp/Ki tuning
-# - Second threshold starts the scripted maneuver sequence once
+# Line-follow tuning constants
 # -----------------------------
+FOLLOW_SAT_DV    = 600.0
+FOLLOW_SP_MIN    = -3000.0
+FOLLOW_SP_MAX    = 3000.0
+
+TUNE_TRIGGER     = 8000.0   # counts to enter tune zone
+SCRIPT_TRIGGER   = 9813.0   # counts to start scripted maneuver
+
+SEG_SMALL_RIGHT  = 150.0    # small right turn distance
+SEG_FWD_1        = 1000.0   # straight after small right
+SEG_TURN_90      = 260.0    # 90-deg right turn distance
+SEG_FWD_2        = 5000.0   # final straight
+
+SCRIPT_FWD_SPD   = 600.0
+SCRIPT_TURN_SPD  = 450.0
+
+LINE_LOST_MS     = 120.0
+LINE_FOUND_MS    = 120.0
+
+# Wheel PI gains: (Kp, Ki) per zone
+BASE_KP,   BASE_KI   = 0.09, 0.0   # 0 to TUNE_TRIGGER
+TUNE_KP,   TUNE_KI   = 0.09, 0.0   # TUNE_TRIGGER to SCRIPT_TRIGGER
+SCRIPT_KP, SCRIPT_KI = 0.09, 0.0   # SCRIPT_TRIGGER onwards
+
+# -----------------------------
+# Line-follow task
+# -----------------------------
+gc.collect()
 followTask = task_follow_line(
     enable_follow=follow_en,
     v_nom=v_nom,
@@ -322,55 +303,27 @@ followTask = task_follow_line(
     spL=setpointL,
     spR=setpointR,
     dv_out=dv_out,
-    sat_dv=600.0,
-    period_ms=50,
-    sp_min=-3000.0,
-    sp_max=3000.0,
-
-    # Encoder positions are used both for trigger distance and scripted segments
+    sat_dv=FOLLOW_SAT_DV,
+    sp_min=FOLLOW_SP_MIN,
+    sp_max=FOLLOW_SP_MAX,
     posL_meas=posL,
     posR_meas=posR,
-    use_line_recovery=False,
     enable_encoder_script=True,
-
-    # First encoder threshold: enter tune zone
-    tune_trigger_counts=8000.0,
-
-    # Second encoder threshold: start scripted maneuver
-    stage0_trigger_counts=9813.0,
-
-    # Encoder-only scripted sequence:
-    # small right -> straight -> 90-ish right -> straight
-    small_right_counts=150.0,
-    stage0_forward1_counts=1000.0,
-    stage0_turn2_counts=260.0,
-    stage0_forward2_counts=5000.0,
-
-    # Speeds used during scripted motion
-    recovery_fwd_speed=600.0,
-    recovery_turn_speed=450.0,
-
-    # automatic wheel Kp/Ki changes by encoder count
+    tune_trigger_counts=TUNE_TRIGGER,
+    stage0_trigger_counts=SCRIPT_TRIGGER,
+    small_right_counts=SEG_SMALL_RIGHT,
+    stage0_forward1_counts=SEG_FWD_1,
+    stage0_turn2_counts=SEG_TURN_90,
+    stage0_forward2_counts=SEG_FWD_2,
+    recovery_fwd_speed=SCRIPT_FWD_SPD,
+    recovery_turn_speed=SCRIPT_TURN_SPD,
     wheel_Kp=Kp,
     wheel_Ki=Ki,
-
-    # gains before 8000 ticks
-    base_wheel_Kp=0.09,
-    base_wheel_Ki=0.0,
-
-    # gains from 8000 to 9813 ticks
-    tune_wheel_Kp=0.09,
-    tune_wheel_Ki=0.0,
-
-    # gains at 9813 ticks and after
-    script_wheel_Kp=0.09,
-    script_wheel_Ki=0.0,
-
-    # Safe lost-line behavior while in normal follow mode
-    line_lost_confirm_ms=120.0,
-    line_found_confirm_ms=120.0,
-
-    # Optional debug shares for live UI streaming
+    base_wheel_Kp=BASE_KP,     base_wheel_Ki=BASE_KI,
+    tune_wheel_Kp=TUNE_KP,     tune_wheel_Ki=TUNE_KI,
+    script_wheel_Kp=SCRIPT_KP, script_wheel_Ki=SCRIPT_KI,
+    line_lost_confirm_ms=LINE_LOST_MS,
+    line_found_confirm_ms=LINE_FOUND_MS,
     script_state_share=script_state,
     script_total_counts_share=script_total_counts,
     script_segment_counts_share=script_segment_counts,
