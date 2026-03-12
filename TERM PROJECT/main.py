@@ -339,17 +339,17 @@ followTask = task_follow_line(
     tune_trigger_counts=8000.0,
 
     # Second encoder threshold: start the scripted maneuver once.
-    stage0_trigger_counts=12000.0,
+    stage0_trigger_counts=9813.0,
 
     # Encoder-only scripted sequence:
     #   small right turn -> straight -> 90-ish right turn -> straight
-    small_right_counts=300.0,
-    stage0_forward1_counts=2000.0,
+    small_right_counts=150.0,
+    stage0_forward1_counts=1000.0,
     stage0_turn2_counts=260.0,
     stage0_forward2_counts=5000.0,
 
     # Speeds used during scripted motion
-    recovery_fwd_speed=700.0,
+    recovery_fwd_speed=600.0,
     recovery_turn_speed=450.0,
 
     # Safe lost-line behavior while in normal follow mode
