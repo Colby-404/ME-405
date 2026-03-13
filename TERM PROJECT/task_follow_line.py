@@ -465,6 +465,7 @@ class task_follow_line:
 
                 if counts_in_segment >= self._stage0_forward1_counts:
                     self._set_segment_start_here()
+                    self._command_stop()   # one-cycle coast before reversing right motor
                     self._state = S5_TURN_90
 
                 yield self._state
@@ -498,6 +499,7 @@ class task_follow_line:
                     self._script_started = True
                     self._i_term = 0.0
                     self._set_segment_start_here()
+                    self._command_stop()   # one-cycle coast before reversing right motor
                     self._state = S3_TURN_SMALL
                     self._update_debug(counts_from_start, 0.0)
                     yield self._state

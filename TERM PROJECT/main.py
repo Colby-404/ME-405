@@ -271,15 +271,15 @@ FOLLOW_SP_MIN    = -3000.0
 FOLLOW_SP_MAX    = 3000.0
 
 TUNE_TRIGGER     = 8000.0   # counts to enter tune zone
-SCRIPT_TRIGGER   = 9813.0   # counts to start scripted maneuver
+SCRIPT_TRIGGER   = 10450.0   # counts to start scripted maneuver
 
-SEG_SMALL_RIGHT  = 150.0    # small right turn distance
-SEG_FWD_1        = 1000.0   # straight after small right
-SEG_TURN_90      = 260.0    # 90-deg right turn distance
+SEG_SMALL_RIGHT  = 180.0    # small right turn distance
+SEG_FWD_1        = 900.0   # straight after small right
+SEG_TURN_90      = 720.0    # 90-deg right turn distance
 SEG_FWD_2        = 5000.0   # final straight
 
-SCRIPT_FWD_SPD   = 600.0
-SCRIPT_TURN_SPD  = 450.0
+SCRIPT_FWD_SPD   = 350.0   # reduced from 600 to limit back-EMF spike at S5 reversal
+SCRIPT_TURN_SPD  = 400.0
 
 LINE_LOST_MS     = 120.0
 LINE_FOUND_MS    = 120.0
@@ -378,6 +378,7 @@ task_list.append(Task(tuningTask.run,     name="Tuning UI",     priority=0, peri
 # -----------------------------
 # RUN
 # -----------------------------
+_err_count = 0
 while True:
     try:
         task_list.pri_sched()
@@ -386,3 +387,13 @@ while True:
         motorR.disable()
         print("Program Terminated")
         break
+    except Exception as e:
+        motorL.disable()
+        motorR.disable()
+        _err_count += 1
+        print("Scheduler error:", e)
+        if _err_count > 5:
+            print("Too many errors, stopping.")
+            break
+        motorL.enable()
+        motorR.enable()

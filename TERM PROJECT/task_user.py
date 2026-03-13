@@ -233,33 +233,38 @@ class task_tuning_ui:
         s.write(b"--------------\r\n>: ")
 
     def _print_stream_line(self):
-        s = self._ser
-        stage = self._stage_name(self._safe_get(self._script_state, 0))
-        total = self._safe_get(self._script_total_counts, 0.0)
-        seg = self._safe_get(self._script_segment_counts, 0.0)
-        posL = self._safe_get(self._posL, 0)
-        posR = self._safe_get(self._posR, 0)
-        spL = self._safe_get(self._setpointL, 0.0)
-        spR = self._safe_get(self._setpointR, 0.0)
-        line_ok = int(self._safe_get(self._line_ok, 1))
+        import gc
+        gc.collect()
+        try:
+            s = self._ser
+            stage = self._stage_name(self._safe_get(self._script_state, 0))
+            total = self._safe_get(self._script_total_counts, 0.0)
+            seg = self._safe_get(self._script_segment_counts, 0.0)
+            posL = self._safe_get(self._posL, 0)
+            posR = self._safe_get(self._posR, 0)
+            spL = self._safe_get(self._setpointL, 0.0)
+            spR = self._safe_get(self._setpointR, 0.0)
+            line_ok = int(self._safe_get(self._line_ok, 1))
 
-        s.write((
-            "stage={} total={} seg={} posL={} posR={} spL={} spR={} V={} wheelKp={} wheelKi={} lineKp={} lineKi={} line_ok={}\r\n".format(
-                stage,
-                total,
-                seg,
-                posL,
-                posR,
-                spL,
-                spR,
-                self._safe_get(self._setpoint, 0.0),
-                self._safe_get(self._Kp, 0.0),
-                self._safe_get(self._Ki, 0.0),
-                self._safe_get(self._Kp_line, 0.0),
-                self._safe_get(self._Ki_line, 0.0),
-                line_ok,
-            )
-        ).encode())
+            s.write((
+                "stage={} total={} seg={} posL={} posR={} spL={} spR={} V={} wheelKp={} wheelKi={} lineKp={} lineKi={} line_ok={}\r\n".format(
+                    stage,
+                    total,
+                    seg,
+                    posL,
+                    posR,
+                    spL,
+                    spR,
+                    self._safe_get(self._setpoint, 0.0),
+                    self._safe_get(self._Kp, 0.0),
+                    self._safe_get(self._Ki, 0.0),
+                    self._safe_get(self._Kp_line, 0.0),
+                    self._safe_get(self._Ki_line, 0.0),
+                    line_ok,
+                )
+            ).encode())
+        except Exception:
+            pass
 
     def ui_poll(self):
         s = self._ser
