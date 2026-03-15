@@ -23,7 +23,8 @@ class task_motor:
                  Ki=None,
                  use_internal_pi=False,
                  effort_sat=100,
-                 pi_output_as_int=True):
+                 pi_output_as_int=True,
+                 pi_reset_share=None):
         self._mot = mot
         self._enc = enc
         self._en = enable
@@ -60,6 +61,7 @@ class task_motor:
 
         self._effort_sat = int(abs(effort_sat))
         self._pi_output_as_int = bool(pi_output_as_int)
+        self._pi_reset = pi_reset_share
 
         self._i_term = 0.0
         self._prev_meas = 0.0
@@ -201,6 +203,15 @@ class task_motor:
 
                     self._omega_meas.put(float(omega))
                     self._pos_meas.put(int(pos))
+
+                    if self._pi_reset is not None:
+                        try:
+                            if self._pi_reset.get():
+                                self._i_term = 0.0
+                                self._prev_err = 0.0
+                                self._pi_reset.put(0)
+                        except Exception:
+                            pass
 
                     if self._use_internal_pi:
                         ref = float(self._setpoint.get())

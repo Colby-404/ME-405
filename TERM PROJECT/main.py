@@ -85,6 +85,7 @@ posL     = Share("l", name="Pos L")
 posR     = Share("l", name="Pos R")
 effortL  = Share("h", name="Left Effort")
 effortR  = Share("h", name="Right Effort")
+pi_reset = Share("B", name="PI Reset")
 start_user = Share("B", name="Start User Task")
 
 # Outer-loop shares
@@ -123,15 +124,15 @@ imu_calraw  = Share("B", name="IMU Cal Raw")
 motorLGo.put(0)
 motorRGo.put(0)
 
-Kp.put(0.09)
-Ki.put(0.0)
+Kp.put(0.04)
+Ki.put(0.00)
 
 v_nom.put(700.0)
 setpointL.put(v_nom.get())
-setpointR.put(v_nom.get())
+setpointR.put(v_nom.get()) 
 
 follow_en.put(0)
-Kp_line.put(0.7)
+Kp_line.put(0.5)
 Ki_line.put(0.0)
 
 line_err.put(0.0)
@@ -146,6 +147,7 @@ cal_done.put(0)
 
 effortL.put(0)
 effortR.put(0)
+pi_reset.put(0)
 
 start_user.put(0)
 
@@ -168,7 +170,8 @@ leftMotorTask = task_motor(
     Kp=Kp,
     Ki=Ki,
     use_internal_pi=True,
-    effort_sat=100
+    effort_sat=100,
+    pi_reset_share=pi_reset
 )
 
 rightMotorTask = task_motor(
@@ -178,7 +181,8 @@ rightMotorTask = task_motor(
     Kp=Kp,
     Ki=Ki,
     use_internal_pi=True,
-    effort_sat=100
+    effort_sat=100,
+    pi_reset_share=pi_reset
 )
 
 # -----------------------------
@@ -266,28 +270,29 @@ def task_read_line():
 # -----------------------------
 # Line-follow tuning constants
 # -----------------------------
-FOLLOW_SAT_DV    = 600.0
+FOLLOW_SAT_DV    = 450.0
 FOLLOW_SP_MIN    = -3000.0
 FOLLOW_SP_MAX    = 3000.0
 
 TUNE_TRIGGER     = 8000.0   # counts to enter tune zone
-SCRIPT_TRIGGER   = 10450.0   # counts to start scripted maneuver
+SCRIPT_TRIGGER   = 10600.0   # counts to start scripted maneuver
 
-SEG_SMALL_RIGHT  = 180.0    # small right turn distance
-SEG_FWD_1        = 900.0   # straight after small right
-SEG_TURN_90      = 720.0    # 90-deg right turn distance
+SEG_SMALL_RIGHT  = 185.0    # small right turn distance
+SEG_FWD_1        = 1200.0   # straight after small right
+SEG_TURN_90      = 595.0    # 90-deg right turn distance
 SEG_FWD_2        = 5000.0   # final straight
 
-SCRIPT_FWD_SPD   = 350.0   # reduced from 600 to limit back-EMF spike at S5 reversal
+SCRIPT_FWD_SPD   = 300.0   # reduced from 600 to limit back-EMF spike at S5 reversal
 SCRIPT_TURN_SPD  = 400.0
 
 LINE_LOST_MS     = 120.0
 LINE_FOUND_MS    = 120.0
+STRAIGHT_YAW_KP  = 1.5     # deg/s -> counts/s: tune sign if robot corrects wrong way
 
 # Wheel PI gains: (Kp, Ki) per zone
-BASE_KP,   BASE_KI   = 0.09, 0.0   # 0 to TUNE_TRIGGER
-TUNE_KP,   TUNE_KI   = 0.09, 0.0   # TUNE_TRIGGER to SCRIPT_TRIGGER
-SCRIPT_KP, SCRIPT_KI = 0.09, 0.0   # SCRIPT_TRIGGER onwards
+BASE_KP,   BASE_KI   = 0.04, 0.05   # 0 to TUNE_TRIGGER
+TUNE_KP,   TUNE_KI   = 0.04, 0.05   # TUNE_TRIGGER to SCRIPT_TRIGGER
+SCRIPT_KP, SCRIPT_KI = 0.04, 0.05   # SCRIPT_TRIGGER onwards
 
 # -----------------------------
 # Line-follow task
@@ -327,6 +332,9 @@ followTask = task_follow_line(
     script_state_share=script_state,
     script_total_counts_share=script_total_counts,
     script_segment_counts_share=script_segment_counts,
+    imu_yawrate_share=None,
+    straight_yaw_kp=0.0,
+    pi_reset_cmd=pi_reset,
 )
 # -----------------------------
 # UI tasks

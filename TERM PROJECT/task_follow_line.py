@@ -86,7 +86,14 @@ class task_follow_line:
                  outer_weight: float = 24.0,
                  sensor_total_min: float = 1.0,
                  sensor_mean_min: float = 1.0,
-                 sensor_error_scale_with_speed: bool = True):
+                 sensor_error_scale_with_speed: bool = True,
+
+                 # IMU heading-hold for scripted straight
+                 imu_yawrate_share=None,
+                 straight_yaw_kp: float = 0.0,
+
+                 # PI integrator reset at scripted state transitions
+                 pi_reset_cmd=None):
 
         self._en = enable_follow
         self._vnom = v_nom
@@ -174,6 +181,10 @@ class task_follow_line:
         self._lost_since_us = None
         self._found_since_us = None
         self._last_valid_err = 0.0
+
+        self._imu_yawrate = imu_yawrate_share
+        self._straight_yaw_kp = float(straight_yaw_kp)
+        self._pi_reset_cmd = pi_reset_cmd
 
     def _reset(self):
         self._i_term = 0.0
@@ -478,6 +489,12 @@ class task_follow_line:
 
                 if counts_in_segment >= self._stage0_turn2_counts:
                     self._set_segment_start_here()
+                    self._command_stop()   # coast before reversing right motor
+                    if self._pi_reset_cmd is not None:
+                        try:
+                            self._pi_reset_cmd.put(1)
+                        except Exception:
+                            pass
                     self._state = S6_FWD_2
 
                 yield self._state
@@ -485,7 +502,18 @@ class task_follow_line:
 
             if self._state == S6_FWD_2:
                 fwd = abs(float(v)) if self._recovery_fwd_speed is None else abs(float(self._recovery_fwd_speed))
-                self._command_forward(fwd)
+                if self._imu_yawrate is not None and self._straight_yaw_kp != 0.0:
+                    try:
+                        yaw = float(self._imu_yawrate.get())
+                        corr = self._straight_yaw_kp * yaw
+                        self._spL.put(self._clamp(fwd - corr, 0.0, self._sp_max))
+                        self._spR.put(self._clamp(fwd + corr, 0.0, self._sp_max))
+                        if self._dv_out is not None:
+                            self._dv_out.put(corr)
+                    except Exception:
+                        self._command_forward(fwd)
+                else:
+                    self._command_forward(fwd)
                 self._update_debug(counts_from_start, counts_in_segment)
 
                 if counts_in_segment >= self._stage0_forward2_counts:
