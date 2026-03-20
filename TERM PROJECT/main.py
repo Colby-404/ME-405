@@ -120,7 +120,7 @@ motorRGo.put(0)
 Kp.put(0.04)
 Ki.put(0.00)
 
-v_nom.put(700.0)
+v_nom.put(2800.0)
 setpointL.put(v_nom.get())
 setpointR.put(v_nom.get())
 
@@ -245,19 +245,24 @@ FOLLOW_SAT_DV = 450.0
 FOLLOW_SP_MIN = -3000.0
 FOLLOW_SP_MAX = 3000.0
 
-TUNE_TRIGGER   = 10000.0
+TUNE_TRIGGER   = 7500.0
 SCRIPT_TRIGGER = 10600.0
 
-SEG_SMALL_RIGHT = 135.0
+SEG_SMALL_RIGHT = 100.0
 SEG_FWD_1       = 950.0
-SEG_TURN_90     = 555.0
+SEG_TURN_90     = 620.0
 SEG_FWD_2       = 5000.0
 
 
 SEG_POST_BUMP_FOLLOW = 1500
-SEG_FWD_3        = 500.0
-SEG_TURN_FULL_90 = 700.0
-POST_BUMP_SLOW_SPD = 200.0   # slower v_nom after turn, for curvy section
+SEG_FWD_3        = 700.0
+SEG_TURN_FULL_90 = 610.0
+POST_BUMP_SLOW_SPD = 400.0   # slower v_nom after turn, for curvy section
+
+SEG_CP4_TRIGGER   = 12000.0   # ticks of slow line-follow before checkpoint 4 turn
+SEG_CP4_FWD_SPD   = 2000.0    # faster forward speed for end section after cp4 turn
+SEG_CP4_TURN_LEFT = 990.0    # encoder ticks for left turn at checkpoint 4
+SEG_CP4_FWD       = 2720.0   # encoder ticks forward from checkpoint 4 to finish line
 
 SCRIPT_FWD_SPD  = 300.0
 SCRIPT_TURN_SPD = 400.0
@@ -266,7 +271,7 @@ LINE_LOST_MS    = 120.0
 LINE_FOUND_MS   = 120.0
 
 BASE_KP,   BASE_KI   = 0.04, 0.05
-TUNE_KP_LINE, TUNE_KI_LINE = 0.5, 0.0
+TUNE_SPD = 350.0              # speed boost at tune trigger (10000 counts)
 SCRIPT_KP, SCRIPT_KI = 0.04, 0.05
 
 # -----------------------------
@@ -301,7 +306,7 @@ followTask = task_follow_line(
     wheel_Ki=Ki,
     base_wheel_Kp=BASE_KP,     base_wheel_Ki=BASE_KI,
     script_wheel_Kp=SCRIPT_KP, script_wheel_Ki=SCRIPT_KI,
-    tune_kp_line=TUNE_KP_LINE, tune_ki_line=TUNE_KI_LINE,
+    tune_speed=TUNE_SPD,
     line_lost_confirm_ms=LINE_LOST_MS,
     line_found_confirm_ms=LINE_FOUND_MS,
     script_state_share=script_state,
@@ -313,6 +318,10 @@ followTask = task_follow_line(
     post_bump_fwd_counts=SEG_FWD_3,
     post_bump_turn_counts=SEG_TURN_FULL_90,
     post_bump_slow_speed=POST_BUMP_SLOW_SPD,
+    cp4_trigger_counts=SEG_CP4_TRIGGER,
+    cp4_turn_left_counts=SEG_CP4_TURN_LEFT,
+    cp4_fwd_counts=SEG_CP4_FWD,
+    cp4_fwd_speed=SEG_CP4_FWD_SPD,
 )
 
 # -----------------------------

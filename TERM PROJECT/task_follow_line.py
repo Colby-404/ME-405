@@ -23,6 +23,9 @@ S8_SCRIPT_EXIT = micropython.const(8)
 S9_POST_FWD    = micropython.const(9)
 S10_POST_TURN        = micropython.const(10)
 S11_POST_BUMP_FOLLOW = micropython.const(11)
+S12_CP4_TURN_LEFT    = micropython.const(12)
+S13_CP4_FWD          = micropython.const(13)
+S14_FINISH_STOP      = micropython.const(14)
 
 
 class task_follow_line:
@@ -67,6 +70,7 @@ class task_follow_line:
                  script_wheel_Ki: float = None,
                  tune_kp_line: float = None,
                  tune_ki_line: float = None,
+                 tune_speed: float = None,
 
                  # debug
                  script_state_share: Share = None,
@@ -112,7 +116,13 @@ class task_follow_line:
                  motion_override=None,
 
                  # slow follow speed after post-bump 90-degree turn (curvy section)
-                 post_bump_slow_speed: float = None):
+                 post_bump_slow_speed: float = None,
+
+                 # checkpoint 4: left turn then forward to finish line (tunable encoder ticks)
+                 cp4_trigger_counts: float = 0.0,
+                 cp4_turn_left_counts: float = 600.0,
+                 cp4_fwd_counts: float = 2000.0,
+                 cp4_fwd_speed: float = None):
 
         self._en = enable_follow
         self._vnom = v_nom
@@ -184,6 +194,7 @@ class task_follow_line:
         self._script_wheel_Ki = script_wheel_Ki
         self._tune_kp_line = tune_kp_line
         self._tune_ki_line = tune_ki_line
+        self._tune_speed = float(tune_speed) if tune_speed is not None else None
         self._tune_gains_applied = False
         self._script_gains_applied = False
 
@@ -217,6 +228,12 @@ class task_follow_line:
         self._post_bump_slow_speed = float(post_bump_slow_speed) if post_bump_slow_speed is not None else None
         self._post_bump_slow_active = False
 
+        self._cp4_trigger_counts = float(cp4_trigger_counts)
+        self._cp4_turn_left_counts = float(cp4_turn_left_counts)
+        self._cp4_fwd_counts = float(cp4_fwd_counts)
+        self._cp4_fwd_speed = float(cp4_fwd_speed) if cp4_fwd_speed is not None else None
+        self._cp4_armed = False
+
     def _reset(self):
         self._i_term = 0.0
         self._prev_err = 0.0
@@ -240,6 +257,7 @@ class task_follow_line:
         self._tune_gains_applied = False
         self._script_gains_applied = False
         self._post_bump_slow_active = False
+        self._cp4_armed = False
         self._apply_wheel_gains(self._base_wheel_Kp, self._base_wheel_Ki)
 
     def _clamp(self, x, lo, hi):
@@ -442,6 +460,12 @@ class task_follow_line:
         if self._dv_out is not None:
             self._dv_out.put(0.0)
 
+    def _command_turn_left(self, turn_speed):
+        self._spL.put(-turn_speed)
+        self._spR.put(+turn_speed)
+        if self._dv_out is not None:
+            self._dv_out.put(+turn_speed)
+
     def run(self):
         while True:
             enabled = bool(self._en.get())
@@ -501,6 +525,8 @@ class task_follow_line:
             if (not self._tune_gains_applied) and (counts_from_start >= self._tune_trigger_counts):
                 self._apply_wheel_gains(self._tune_wheel_Kp, self._tune_wheel_Ki)
                 self._apply_line_gains(self._tune_kp_line, self._tune_ki_line)
+                if self._tune_speed is not None:
+                    self._vnom.put(self._tune_speed)
                 self._tune_gains_applied = True
 
             if (not self._script_gains_applied) and (counts_from_start >= self._stage0_trigger_counts):
@@ -542,7 +568,41 @@ class task_follow_line:
                     self._i_term = 0.0
                     if self._post_bump_slow_speed is not None:
                         self._post_bump_slow_active = True
+                    if self._cp4_turn_left_counts > 0:
+                        self._cp4_armed = True
                     self._state = S1_RUN
+                yield self._state
+                continue
+
+            if self._state == S12_CP4_TURN_LEFT:
+                turn = abs(float(self._recovery_turn_speed))
+                self._command_turn_left(turn)
+                self._update_debug(counts_from_start, counts_in_segment)
+                if counts_in_segment >= self._cp4_turn_left_counts:
+                    self._set_segment_start_here()
+                    self._command_stop()
+                    self._state = S13_CP4_FWD
+                yield self._state
+                continue
+
+            if self._state == S13_CP4_FWD:
+                if self._cp4_fwd_speed is not None:
+                    fwd = self._cp4_fwd_speed
+                elif self._recovery_fwd_speed is not None:
+                    fwd = abs(float(self._recovery_fwd_speed))
+                else:
+                    fwd = abs(float(v))
+                self._command_forward(fwd)
+                self._update_debug(counts_from_start, counts_in_segment)
+                if counts_in_segment >= self._cp4_fwd_counts:
+                    self._command_stop()
+                    self._state = S14_FINISH_STOP
+                yield self._state
+                continue
+
+            if self._state == S14_FINISH_STOP:
+                self._command_stop()
+                self._update_debug(counts_from_start, counts_in_segment)
                 yield self._state
                 continue
 
@@ -627,6 +687,17 @@ class task_follow_line:
                 self._command_stop()
                 self._state = S9_POST_FWD
                 self._update_debug(counts_from_start, counts_in_segment)
+                yield self._state
+                continue
+
+            # Checkpoint 4 trigger: after enough slow-follow ticks, start left turn
+            if (self._cp4_armed and self._post_bump_slow_active
+                    and counts_in_segment >= self._cp4_trigger_counts):
+                self._cp4_armed = False
+                self._set_segment_start_here()
+                self._command_stop()
+                self._state = S12_CP4_TURN_LEFT
+                self._update_debug(counts_from_start, 0.0)
                 yield self._state
                 continue
 
