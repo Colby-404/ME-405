@@ -106,6 +106,9 @@ class task_tuning_ui:
             6: "FWD_2",
             7: "LOST_STOP",
             8: "SCRIPT_EXIT",
+            9: "POST_FWD",
+            10: "POST_TURN",
+            11: "POST_BUMP_FOLLOW",
         }
         return names.get(int(code), "UNKNOWN")
 

@@ -5,29 +5,26 @@ import pyb
 
 gc.collect()
 
-# ---- Low-RAM import order ----
+# ---- Low-RAM import order (largest first) ----
+from task_follow_line import task_follow_line
+gc.collect()
 from task_user import task_tuning_ui
-gc.collect()
-
-from motor_driver import motor_driver
-gc.collect()
-from encoder import encoder
-gc.collect()
-from task_motor import task_motor
 gc.collect()
 from task_share import Share
 gc.collect()
 from cotask import Task, task_list
 gc.collect()
-from task_follow_line import task_follow_line
+from task_bumper_recovery import task_bumper_recovery
+gc.collect()
+from task_motor import task_motor
 gc.collect()
 from sensor_driver import QTRSensorsAnalog
 gc.collect()
+from motor_driver import motor_driver
+gc.collect()
+from encoder import encoder
+gc.collect()
 
-from imu_driver import BNO055
-gc.collect()
-from task_imu import task_imu
-gc.collect()
 
 # -----------------------------
 # USB
@@ -51,11 +48,6 @@ motorR = motor_driver(pwmR, 'PC2', 'PC3')
 encL = encoder(2, 'PA0', 'PA1', invert=False)
 encR = encoder(1, 'PA8', 'PA9', invert=False)
 
-# -----------------------------
-# IMU (BNO055, I2C2: SCL=PB13, SDA=PB14)
-# -----------------------------
-imu = BNO055.from_softi2c('PB13', 'PB14', freq=100000, addr=0x28)
-IMU_FUSION_MODE = BNO055.MODE_IMUPLUS  # accel+gyro only (no mag)
 
 # -----------------------------
 # Line sensor (QTR-MD-08A Analog)
@@ -71,52 +63,53 @@ if hasattr(qtr, 'emitters_on'):
     qtr.emitters_on()
 
 # -----------------------------
+# Pololu bumper pins
+# -----------------------------
+BMP0_RIGHT_OUTER = 'PA10'
+BMP1_RIGHT_MID   = 'PB3'
+BMP2_RIGHT_INNER = 'PB4'
+
+BMP5_LEFT_OUTER  = 'PB5'
+BMP4_LEFT_MID    = 'PB10'
+BMP3_LEFT_INNER  = 'PC7'
+
+# -----------------------------
 # Shares
 # -----------------------------
-motorLGo = Share("B", name="Left Enable")
-motorRGo = Share("B", name="Right Enable")
-Kp       = Share("f", name="Wheel Kp")
-Ki       = Share("f", name="Wheel Ki")
-setpointL = Share("f", name="Setpoint L")
-setpointR = Share("f", name="Setpoint R")
-omegaL   = Share("f", name="Omega L")
-omegaR   = Share("f", name="Omega R")
-posL     = Share("l", name="Pos L")
-posR     = Share("l", name="Pos R")
-effortL  = Share("h", name="Left Effort")
-effortR  = Share("h", name="Right Effort")
-pi_reset = Share("B", name="PI Reset")
+motorLGo   = Share("B", name="Left Enable")
+motorRGo   = Share("B", name="Right Enable")
+Kp         = Share("f", name="Wheel Kp")
+Ki         = Share("f", name="Wheel Ki")
+setpointL  = Share("f", name="Setpoint L")
+setpointR  = Share("f", name="Setpoint R")
+omegaL     = Share("f", name="Omega L")
+omegaR     = Share("f", name="Omega R")
+posL       = Share("l", name="Pos L")
+posR       = Share("l", name="Pos R")
+effortL    = Share("h", name="Left Effort")
+effortR    = Share("h", name="Right Effort")
+pi_reset   = Share("B", name="PI Reset")
 start_user = Share("B", name="Start User Task")
 
 # Outer-loop shares
-follow_en = Share("B", name="Follow Enable")
-v_nom     = Share("f", name="V_nom")      # counts/s
-Kp_line   = Share("f", name="Line Kp")
-Ki_line   = Share("f", name="Line Ki")
-line_err  = Share("f", name="Line Error")
-line_ok   = Share("B", name="Line OK")
-dv_out    = Share("f", name="dv_out")
+follow_en     = Share("B", name="Follow Enable")
+bump_override = Share("B", name="Bump Override")
+v_nom         = Share("f", name="V_nom")
+Kp_line       = Share("f", name="Line Kp")
+Ki_line       = Share("f", name="Line Ki")
+line_err      = Share("f", name="Line Error")
+line_ok       = Share("B", name="Line OK")
+dv_out        = Share("f", name="dv_out")
 
-# Script debug shares (for encoder-based scripted tuning)
-script_state = Share("B", name="Script State")
-script_total_counts = Share("f", name="Script Total Counts")
+# Script debug shares
+script_state          = Share("B", name="Script State")
+script_total_counts   = Share("f", name="Script Total Counts")
 script_segment_counts = Share("f", name="Script Segment Counts")
 
-# Calibration command shares (line sensor)
+# Calibration command shares
 cal_cmd  = Share("B", name="Cal Cmd")
 cal_done = Share("B", name="Cal Done")
 
-# -----------------------------
-# IMU shares
-# -----------------------------
-imu_en        = Share("B", name="IMU Enable")
-imu_mode      = Share("B", name="IMU Mode")
-imu_zero_cmd  = Share("B", name="IMU Zero Cmd")
-imu_save_cmd  = Share("B", name="IMU Save Cal Cmd")
-
-imu_heading = Share("f", name="IMU Heading deg")
-imu_yawrate = Share("f", name="IMU YawRate dps")
-imu_calraw  = Share("B", name="IMU Cal Raw")
 
 # -----------------------------
 # Initial values
@@ -129,15 +122,18 @@ Ki.put(0.00)
 
 v_nom.put(700.0)
 setpointL.put(v_nom.get())
-setpointR.put(v_nom.get()) 
+setpointR.put(v_nom.get())
 
 follow_en.put(0)
+bump_override.put(0)
+
 Kp_line.put(0.5)
 Ki_line.put(0.0)
 
 line_err.put(0.0)
 line_ok.put(1)
 dv_out.put(0.0)
+
 script_state.put(0)
 script_total_counts.put(0.0)
 script_segment_counts.put(0.0)
@@ -151,14 +147,6 @@ pi_reset.put(0)
 
 start_user.put(0)
 
-imu_en.put(1)
-imu_mode.put(int(IMU_FUSION_MODE) & 0xFF)
-imu_zero_cmd.put(0)
-imu_save_cmd.put(0)
-
-imu_heading.put(0.0)
-imu_yawrate.put(0.0)
-imu_calraw.put(0)
 
 # -----------------------------
 # Motor tasks
@@ -185,26 +173,9 @@ rightMotorTask = task_motor(
     pi_reset_share=pi_reset
 )
 
-# -----------------------------
-# IMU task
-# -----------------------------
-imuTask = task_imu(
-    imu=imu,
-    enable_share=imu_en,
-    mode_share=imu_mode,
-    zero_cmd_share=imu_zero_cmd,
-    save_cal_cmd_share=imu_save_cmd,
-    heading_deg=imu_heading,
-    yaw_rate_dps=imu_yawrate,
-    calib_raw=imu_calraw,
-    require_mag=False,
-    calib_file="bno055_calib.bin",
-    try_load_calib=True,
-    fusion_mode=IMU_FUSION_MODE
-)
 
 # -----------------------------
-# Sensor read task: updates line_err and handles calibration
+# Sensor read task
 # -----------------------------
 def task_read_line():
     OVERSAMPLE = 4
@@ -270,29 +241,33 @@ def task_read_line():
 # -----------------------------
 # Line-follow tuning constants
 # -----------------------------
-FOLLOW_SAT_DV    = 450.0
-FOLLOW_SP_MIN    = -3000.0
-FOLLOW_SP_MAX    = 3000.0
+FOLLOW_SAT_DV = 450.0
+FOLLOW_SP_MIN = -3000.0
+FOLLOW_SP_MAX = 3000.0
 
-TUNE_TRIGGER     = 8000.0   # counts to enter tune zone
-SCRIPT_TRIGGER   = 10600.0   # counts to start scripted maneuver
+TUNE_TRIGGER   = 10000.0
+SCRIPT_TRIGGER = 10600.0
 
-SEG_SMALL_RIGHT  = 185.0    # small right turn distance
-SEG_FWD_1        = 1200.0   # straight after small right
-SEG_TURN_90      = 595.0    # 90-deg right turn distance
-SEG_FWD_2        = 5000.0   # final straight
+SEG_SMALL_RIGHT = 135.0
+SEG_FWD_1       = 950.0
+SEG_TURN_90     = 555.0
+SEG_FWD_2       = 5000.0
 
-SCRIPT_FWD_SPD   = 300.0   # reduced from 600 to limit back-EMF spike at S5 reversal
-SCRIPT_TURN_SPD  = 400.0
 
-LINE_LOST_MS     = 120.0
-LINE_FOUND_MS    = 120.0
-STRAIGHT_YAW_KP  = 1.5     # deg/s -> counts/s: tune sign if robot corrects wrong way
+SEG_POST_BUMP_FOLLOW = 1500
+SEG_FWD_3        = 500.0
+SEG_TURN_FULL_90 = 700.0
+POST_BUMP_SLOW_SPD = 200.0   # slower v_nom after turn, for curvy section
 
-# Wheel PI gains: (Kp, Ki) per zone
-BASE_KP,   BASE_KI   = 0.04, 0.05   # 0 to TUNE_TRIGGER
-TUNE_KP,   TUNE_KI   = 0.04, 0.05   # TUNE_TRIGGER to SCRIPT_TRIGGER
-SCRIPT_KP, SCRIPT_KI = 0.04, 0.05   # SCRIPT_TRIGGER onwards
+SCRIPT_FWD_SPD  = 300.0
+SCRIPT_TURN_SPD = 400.0
+
+LINE_LOST_MS    = 120.0
+LINE_FOUND_MS   = 120.0
+
+BASE_KP,   BASE_KI   = 0.04, 0.05
+TUNE_KP_LINE, TUNE_KI_LINE = 0.5, 0.0
+SCRIPT_KP, SCRIPT_KI = 0.04, 0.05
 
 # -----------------------------
 # Line-follow task
@@ -325,19 +300,57 @@ followTask = task_follow_line(
     wheel_Kp=Kp,
     wheel_Ki=Ki,
     base_wheel_Kp=BASE_KP,     base_wheel_Ki=BASE_KI,
-    tune_wheel_Kp=TUNE_KP,     tune_wheel_Ki=TUNE_KI,
     script_wheel_Kp=SCRIPT_KP, script_wheel_Ki=SCRIPT_KI,
+    tune_kp_line=TUNE_KP_LINE, tune_ki_line=TUNE_KI_LINE,
     line_lost_confirm_ms=LINE_LOST_MS,
     line_found_confirm_ms=LINE_FOUND_MS,
     script_state_share=script_state,
     script_total_counts_share=script_total_counts,
     script_segment_counts_share=script_segment_counts,
-    imu_yawrate_share=None,
-    straight_yaw_kp=0.0,
     pi_reset_cmd=pi_reset,
+    motion_override=bump_override,
+    post_bump_follow_counts=SEG_POST_BUMP_FOLLOW,
+    post_bump_fwd_counts=SEG_FWD_3,
+    post_bump_turn_counts=SEG_TURN_FULL_90,
+    post_bump_slow_speed=POST_BUMP_SLOW_SPD,
 )
+
 # -----------------------------
-# UI tasks
+# Bumper recovery task
+# -----------------------------
+bumperTask = task_bumper_recovery(
+    bmp_r_outer=BMP0_RIGHT_OUTER,
+    bmp_r_mid=BMP1_RIGHT_MID,
+    bmp_r_inner=BMP2_RIGHT_INNER,
+
+    bmp_l_outer=BMP5_LEFT_OUTER,
+    bmp_l_mid=BMP4_LEFT_MID,
+    bmp_l_inner=BMP3_LEFT_INNER,
+
+    follow_en=follow_en,
+    motorLGo=motorLGo,
+    motorRGo=motorRGo,
+    setpointL=setpointL,
+    setpointR=setpointR,
+    posL=posL,
+    posR=posR,
+    pi_reset=pi_reset,
+    motion_override=bump_override,
+
+    reverse_speed=180.0,
+    reverse_ticks=180.0,
+    turn_speed=300.0,
+    turn_ticks=400.0,
+    brake_ms=120,
+    resume_ms=80,
+    debounce_ms=40,
+    release_ms=60,
+    rearm_ms=250,
+    active_low=True
+)
+
+# -----------------------------
+# UI task
 # -----------------------------
 tuningTask = task_tuning_ui(
     start_user,
@@ -362,25 +375,19 @@ tuningTask = task_tuning_ui(
     script_total_counts=script_total_counts,
     script_segment_counts=script_segment_counts,
     line_ok=line_ok,
-    imu_heading=imu_heading,
-    imu_yawrate=imu_yawrate,
-    imu_calraw=imu_calraw,
-    imu_en=imu_en,
-    imu_mode=imu_mode,
-    imu_zero_cmd=imu_zero_cmd,
-    imu_save_cmd=imu_save_cmd,
 )
 
 # -----------------------------
 # Scheduler
 # -----------------------------
+
 task_list.append(Task(leftMotorTask.run,  name="Left Motor",    priority=1, period=20))
 task_list.append(Task(rightMotorTask.run, name="Right Motor",   priority=1, period=20))
 
 task_list.append(Task(task_read_line,     name="Line Read",     priority=3, period=20))
 task_list.append(Task(followTask.run,     name="Line Follow",   priority=3, period=20))
+task_list.append(Task(bumperTask.run,     name="Bumper",      priority=4, period=20))
 
-task_list.append(Task(imuTask.run,        name="IMU",           priority=2, period=20))
 task_list.append(Task(tuningTask.run,     name="Tuning UI",     priority=0, period=50))
 
 # -----------------------------

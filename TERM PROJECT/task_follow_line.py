@@ -20,6 +20,9 @@ S5_TURN_90     = micropython.const(5)
 S6_FWD_2       = micropython.const(6)
 S7_LOST_STOP   = micropython.const(7)
 S8_SCRIPT_EXIT = micropython.const(8)
+S9_POST_FWD    = micropython.const(9)
+S10_POST_TURN        = micropython.const(10)
+S11_POST_BUMP_FOLLOW = micropython.const(11)
 
 
 class task_follow_line:
@@ -53,7 +56,7 @@ class task_follow_line:
                  stage0_turn2_counts: float = 260.0,
                  stage0_forward2_counts: float = 600.0,
 
-                 # NEW: wheel gain scheduling shares + values
+                 # wheel gain scheduling shares + values
                  wheel_Kp: Share = None,
                  wheel_Ki: Share = None,
                  base_wheel_Kp: float = None,
@@ -62,6 +65,8 @@ class task_follow_line:
                  tune_wheel_Ki: float = None,
                  script_wheel_Kp: float = None,
                  script_wheel_Ki: float = None,
+                 tune_kp_line: float = None,
+                 tune_ki_line: float = None,
 
                  # debug
                  script_state_share: Share = None,
@@ -88,12 +93,26 @@ class task_follow_line:
                  sensor_mean_min: float = 1.0,
                  sensor_error_scale_with_speed: bool = True,
 
-                 # IMU heading-hold for scripted straight
+                 # forward speed trim: positive slows left / speeds right (fixes right drift)
+                 fwd_trim: float = 7.5,
+
+                 # optional IMU straightening during scripted forward
                  imu_yawrate_share=None,
                  straight_yaw_kp: float = 0.0,
 
                  # PI integrator reset at scripted state transitions
-                 pi_reset_cmd=None):
+                 pi_reset_cmd=None,
+
+                 # post-bumper-recovery scripted segments
+                 post_bump_follow_counts: float = 0.0,
+                 post_bump_fwd_counts: float = 0.0,
+                 post_bump_turn_counts: float = 0.0,
+
+                 # NEW: allow another task to temporarily own wheel setpoints
+                 motion_override=None,
+
+                 # slow follow speed after post-bump 90-degree turn (curvy section)
+                 post_bump_slow_speed: float = None):
 
         self._en = enable_follow
         self._vnom = v_nom
@@ -163,6 +182,8 @@ class task_follow_line:
         self._tune_wheel_Ki = tune_wheel_Ki
         self._script_wheel_Kp = script_wheel_Kp
         self._script_wheel_Ki = script_wheel_Ki
+        self._tune_kp_line = tune_kp_line
+        self._tune_ki_line = tune_ki_line
         self._tune_gains_applied = False
         self._script_gains_applied = False
 
@@ -182,9 +203,19 @@ class task_follow_line:
         self._found_since_us = None
         self._last_valid_err = 0.0
 
+        self._fwd_trim = float(fwd_trim)
         self._imu_yawrate = imu_yawrate_share
         self._straight_yaw_kp = float(straight_yaw_kp)
         self._pi_reset_cmd = pi_reset_cmd
+        self._motion_override = motion_override
+
+        self._post_bump_follow_counts = float(post_bump_follow_counts)
+        self._post_bump_fwd_counts = float(post_bump_fwd_counts)
+        self._post_bump_turn_counts = float(post_bump_turn_counts)
+        self._post_bump_armed = False
+        self._prev_override = False
+        self._post_bump_slow_speed = float(post_bump_slow_speed) if post_bump_slow_speed is not None else None
+        self._post_bump_slow_active = False
 
     def _reset(self):
         self._i_term = 0.0
@@ -208,6 +239,7 @@ class task_follow_line:
 
         self._tune_gains_applied = False
         self._script_gains_applied = False
+        self._post_bump_slow_active = False
         self._apply_wheel_gains(self._base_wheel_Kp, self._base_wheel_Ki)
 
     def _clamp(self, x, lo, hi):
@@ -266,6 +298,18 @@ class task_follow_line:
         if self._wheel_Ki is not None and ki_val is not None:
             try:
                 self._wheel_Ki.put(float(ki_val))
+            except Exception:
+                pass
+
+    def _apply_line_gains(self, kp_val, ki_val):
+        if self._Kp is not None and kp_val is not None:
+            try:
+                self._Kp.put(float(kp_val))
+            except Exception:
+                pass
+        if self._Ki is not None and ki_val is not None:
+            try:
+                self._Ki.put(float(ki_val))
             except Exception:
                 pass
 
@@ -393,14 +437,24 @@ class task_follow_line:
             self._dv_out.put(-turn_speed)
 
     def _command_forward(self, fwd_speed):
-        self._spL.put(+fwd_speed)
-        self._spR.put(+fwd_speed)
+        self._spL.put(fwd_speed - self._fwd_trim)
+        self._spR.put(fwd_speed + self._fwd_trim)
         if self._dv_out is not None:
             self._dv_out.put(0.0)
 
     def run(self):
         while True:
             enabled = bool(self._en.get())
+
+            override_active = False
+            if self._motion_override is not None:
+                try:
+                    override_active = bool(self._motion_override.get())
+                except Exception:
+                    override_active = False
+
+            prev_override = self._prev_override
+            self._prev_override = override_active
 
             if enabled and not self._was_enabled:
                 self._reset()
@@ -411,12 +465,20 @@ class task_follow_line:
                 self._prev_meas = e0
                 self._prev_err = e0
                 self._last_valid_err = e0
+                if prev_override and self._post_bump_fwd_counts > 0:
+                    self._post_bump_armed = True
+                    self._script_done = True
+                    self._set_segment_start_here()
+                    self._state = S11_POST_BUMP_FOLLOW
 
             self._was_enabled = enabled
             v = float(self._vnom.get())
+            if self._post_bump_slow_active and self._post_bump_slow_speed is not None:
+                v = self._post_bump_slow_speed
 
             if not enabled:
-                self._command_stop()
+                if not override_active:
+                    self._command_stop()
                 self._i_term = 0.0
                 self._state = S0_IDLE
                 self._update_debug(0.0, 0.0)
@@ -438,6 +500,7 @@ class task_follow_line:
 
             if (not self._tune_gains_applied) and (counts_from_start >= self._tune_trigger_counts):
                 self._apply_wheel_gains(self._tune_wheel_Kp, self._tune_wheel_Ki)
+                self._apply_line_gains(self._tune_kp_line, self._tune_ki_line)
                 self._tune_gains_applied = True
 
             if (not self._script_gains_applied) and (counts_from_start >= self._stage0_trigger_counts):
@@ -454,6 +517,32 @@ class task_follow_line:
                 self._prev_meas = err
                 self._prev_t_us = now_us
                 self._update_debug(counts_from_start, 0.0)
+                yield self._state
+                continue
+
+            if self._state == S9_POST_FWD:
+                fwd = abs(float(v)) if self._recovery_fwd_speed is None else abs(float(self._recovery_fwd_speed))
+                self._command_forward(fwd)
+                self._update_debug(counts_from_start, counts_in_segment)
+                if counts_in_segment >= self._post_bump_fwd_counts:
+                    self._set_segment_start_here()
+                    self._command_stop()
+                    self._state = S10_POST_TURN
+                yield self._state
+                continue
+
+            if self._state == S10_POST_TURN:
+                turn = abs(float(self._recovery_turn_speed))
+                self._command_turn_right(turn)
+                self._update_debug(counts_from_start, counts_in_segment)
+                if counts_in_segment >= self._post_bump_turn_counts:
+                    self._set_segment_start_here()
+                    self._command_stop()
+                    self._post_bump_armed = False
+                    self._i_term = 0.0
+                    if self._post_bump_slow_speed is not None:
+                        self._post_bump_slow_active = True
+                    self._state = S1_RUN
                 yield self._state
                 continue
 
@@ -476,7 +565,7 @@ class task_follow_line:
 
                 if counts_in_segment >= self._stage0_forward1_counts:
                     self._set_segment_start_here()
-                    self._command_stop()   # one-cycle coast before reversing right motor
+                    self._command_stop()
                     self._state = S5_TURN_90
 
                 yield self._state
@@ -489,7 +578,7 @@ class task_follow_line:
 
                 if counts_in_segment >= self._stage0_turn2_counts:
                     self._set_segment_start_here()
-                    self._command_stop()   # coast before reversing right motor
+                    self._command_stop()
                     if self._pi_reset_cmd is not None:
                         try:
                             self._pi_reset_cmd.put(1)
@@ -527,15 +616,20 @@ class task_follow_line:
                     self._script_started = True
                     self._i_term = 0.0
                     self._set_segment_start_here()
-                    self._command_stop()   # one-cycle coast before reversing right motor
+                    self._command_stop()
                     self._state = S3_TURN_SMALL
                     self._update_debug(counts_from_start, 0.0)
                     yield self._state
                     continue
 
-            # -----------------------------
-            # Normal line-follow / tune-zone
-            # -----------------------------
+            if self._state == S11_POST_BUMP_FOLLOW and counts_in_segment >= self._post_bump_follow_counts:
+                self._set_segment_start_here()
+                self._command_stop()
+                self._state = S9_POST_FWD
+                self._update_debug(counts_from_start, counts_in_segment)
+                yield self._state
+                continue
+
             normal_state = S2_TUNE_ZONE if tune_zone_active else S1_RUN
 
             if raw_valid:
@@ -576,15 +670,16 @@ class task_follow_line:
                     yield self._state
                     continue
 
-                ctrl_err = self._last_valid_err  # hold last valid error on short dropout
+                ctrl_err = self._last_valid_err
 
-            if self._state != normal_state:
+            if self._state not in (normal_state, S11_POST_BUMP_FOLLOW):
                 self._i_term = 0.0
                 self._prev_err = ctrl_err
                 self._prev_meas = ctrl_err
                 self._prev_t_us = now_us
 
-            self._state = normal_state
+            if self._state != S11_POST_BUMP_FOLLOW:
+                self._state = normal_state
 
             dt_us = ticks_diff(now_us, self._prev_t_us)
             self._prev_t_us = now_us
