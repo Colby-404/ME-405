@@ -575,6 +575,8 @@ The project’s biggest achievement is architectural: it turns a difficult real-
 
 ## Robot Performance Video
 
-The video below shows our final ME 405 Romi robot completing the project track using closed-loop line-following control. During the run, the robot uses its reflectance sensor array to detect the line and continuously adjust its motion to navigate the course autonomously.
+The clip below shows our final ME 405 Romi robot completing the project track using closed-loop line-following control.
 
-[![Watch the robot performance video](https://img.youtube.com/vi/Pn7XdVaAzuA/maxresdefault.jpg)](https://youtube.com/shorts/Pn7XdVaAzuA)
+![Robot performance demo](./assets/robot_run.gif)
+
+[Watch the full video on YouTube](https://youtube.com/shorts/Pn7XdVaAzuA)
