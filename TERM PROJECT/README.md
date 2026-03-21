@@ -124,7 +124,62 @@ This term project brings together the major topics of ME 405 into one complete r
 
 The repository also contains `.mpy` files, which are compiled versions of MicroPython `.py` files. The files are precompiled bytecode and exist to reduce the memory usage, and therefore run faster and avoid runtime compilation overhead. 
 
-## System Architecture
+# Game Track Overview
+
+The game track is a multi-section course designed to test the Romi robot’s ability to follow lines, handle curves, recognize intersections, and navigate between multiple checkpoints. The course includes both fast sections and precision-control sections, requiring the robot to balance speed with accurate tracking.
+
+The robot begins in the **start circle at CP#0 / CP#5** in the upper-left corner of the map. From there, the main route includes a **long straightaway across the top of the course**, followed by a **large right-hand turn** near **CP#1**. This section is useful for testing high-speed line following and straight-line stability.
+
+The left and lower portions of the course include **large-radius curves** and a **wavy S-curve section** leading toward **CP#3** and **CP#2**. These parts of the track test how well the robot can maintain line position through changing curvature and transition smoothly between turns.
+
+The center of the map includes a **branching/dashed path near CP#4**, which appears to represent a secondary route or special navigation segment. This section can be used to test decision-making, alternate routing, or behavior changes between different course features.
+
+Near the right side of the map, the course also includes a **wall region**, a **grid-like zone**, and a **cross intersection** near **CP#2**. These features add complexity beyond simple line following and may require the robot to slow down, re-center itself, or execute special logic depending on the competition rules.
+
+Additional **circular marked zones** are placed around the course and may be used for calibration, detection tasks, or checkpoint-based actions. The **IR calibration corner** in the upper-right corner is specifically intended for reflectance sensor setup and calibration before or during testing.
+
+Overall, the track is designed to evaluate:
+
+- line-following accuracy
+- speed on straight sections
+- turning performance on tight and wide curves
+- stability through S-curves
+- behavior at intersections and branching paths
+- repeatability across multiple checkpoints
+
+This layout makes the course a full-system test of the robot’s sensing, control, and navigation performance.
+
+<img width="5139" height="2554" alt="image" src="https://github.com/user-attachments/assets/a256f24c-b7c3-4547-8ffa-549ae1974432" />
+
+
+# Final Robot Configuration
+
+As detailed in **HARDWARE SETUP.md**, **HARDWARE DESCRIPTION.md**, and the project **pinout diagram**, the final term project robot was assembled as a fully integrated Romi-based autonomous robot for line following and time-trial navigation. The platform used a **Pololu Romi chassis** with two independently driven wheels, wheel encoders for motion feedback, an **STM32 Nucleo-L476RG** mounted on a **Shoe of Brian**, and a front-mounted reflectance sensor array for detecting and tracking the course line.
+
+The final hardware arrangement combined the controller stack, power system, sensor wiring, and drive hardware into a compact and testable layout. The Nucleo and interface board were mounted above the chassis, the cables were routed to the motors and encoders through the hardware stack, and the front sensor assembly was positioned to provide reliable line readings during motion. This final setup was the hardware configuration used for testing, tuning, and the final project demonstration.
+
+The image below shows the completed robot assembly used in the term project.
+
+
+![IMG_2487](https://github.com/user-attachments/assets/a105b7a0-475f-4500-81f6-4237cec445a9)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# System Architecture
 
 The software can be understood as five major parts
 
