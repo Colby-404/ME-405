@@ -587,3 +587,7 @@ This file, also provided by Dr. John Ridgely, implements safe shared variables a
 
 The project’s biggest achievement is architectural: it turns a difficult real-world robot task into manageable layers. Its second biggest achievement is procedural: it preserves evidence of iterative testing and course-specific refinement. Those qualities matter because in robotics, the best code is rarely the shortest or most abstract. It is the code that works repeatedly on the real machine, under imperfect conditions, and still remains understandable enough to improve.
 
+
+## Robot Performance Video
+
+The video below shows our final ME 405 Romi robot completing the project track using closed-loop line-following control. During the run, the robot uses its reflectance sensor array to detect the line and continuously adjust its motion to navigate the course autonomously.
