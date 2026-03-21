@@ -163,7 +163,6 @@ The image below shows the completed robot assembly used in the term project.
 
 ![IMG_2487](https://github.com/user-attachments/assets/a105b7a0-475f-4500-81f6-4237cec445a9)
 
-
 # System Architecture
 
 The software can be understood as five major parts
@@ -200,8 +199,31 @@ The robot then creates these major tasks:
 Finally, the scheduler repeatedly calls the highest-priority task that is ready to run.
 
 ---
+## Task Diagram
 
-## Core Files
+The diagram shows the final task structure used in the term project. Each box represents a scheduled task, labeled with its period and priority, and each dashed connection shows data passed between tasks.
+
+Most of the communication is already shown directly in the diagram, so this section is only meant to briefly explain how to read it.
+
+### Reading the Diagram
+
+- Each task runs at a fixed rate using the cooperative scheduler.
+- The labels on the arrows are the shared variables used for communication.
+- `(-1)` indicates a **Share** rather than a **Queue**.
+
+### Why the Design Uses Mostly Shares
+
+This system uses mostly **Shares** and very few **Queues** because the tasks generally only need access to the most recent value of each variable. Since the controller is based on the robot’s current state, storing older values is usually unnecessary.
+
+Using Shares keeps communication simpler, reduces memory use, and avoids extra buffering between tasks. This makes the system better suited for real-time control, where the newest available data is what matters most.
+
+### Overall Behavior
+
+The tasks work together to read sensors, compute control actions, drive the motors, handle tuning and user input, and respond to bumper-triggered recovery. Overall, the diagram represents a control system built around sharing the robot’s current state between tasks efficiently.
+
+<img width="2084" height="1324" alt="image" src="https://github.com/user-attachments/assets/44cac32c-546f-46bc-8e00-4e41d53112af" />
+
+# Core Files
 
 ## main.py
 
