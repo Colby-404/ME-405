@@ -203,6 +203,31 @@ The QTR array enables:
 - line position estimation
 - closed-loop line following
 
+## Mounting Hardware
+
+The QTR-MD-08A reflectance sensor array was mounted using the following hardware:
+
+| Component | Specification | Quantity |
+|----------|---------------|----------|
+| Standoff | Pololu aluminum male-female standoff, **1/2" length, 2-56 thread** | 2 |
+| Screw / Bolt | **2-56 machine screw** | 2 |
+| Nut | **2-56 hex nut** | 2 |
+
+## Mounting and Placement
+
+The QTR-MD-08A reflectance sensor array was mounted at the front of the Romi chassis and centered relative to the robot so it could detect the line before the wheels passed over it. The board was oriented parallel to the ground to provide consistent reflectance readings across all eight sensors.
+
+The sensor was supported using **two Pololu aluminum male-female standoffs** with a **1/2" body length and 2-56 threads**. These standoffs kept the board spaced away from the mounting surface and helped maintain a fixed sensor height. The board was then secured using **two 2-56 screws** and **two 2-56 nuts**.
+
+This mounting arrangement was selected to:
+
+- provide a rigid mechanical connection
+- maintain a repeatable sensor-to-ground spacing
+- keep the board parallel to the floor
+- position the sensor ahead of the wheels for earlier line detection
+
+Using fixed-height standoffs improved calibration consistency and helped the reflectance array produce stable readings during closed-loop line-following operation.
+
 ---
 
 # Collision Detection
