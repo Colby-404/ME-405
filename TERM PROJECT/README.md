@@ -134,7 +134,7 @@ The left and lower portions of the course include **large-radius curves** and a 
 
 The center of the map includes a **branching/dashed path near CP#4**, which appears to represent a secondary route or special navigation segment. This section can be used to test decision-making, alternate routing, or behavior changes between different course features.
 
-Near the right side of the map, the course also includes a **wall region**, a **grid-like zone**, and a **cross intersection** near **CP#2**. These features add complexity beyond simple line following and may require the robot to slow down, re-center itself, or execute special logic depending on the competition rules.
+Near the right side of the map, the course also includes a **wall region**, a **grid-like zone**, and a **cross intersection** near **CP#2**. These features add complexity beyond simple line following.
 
 Additional **circular marked zones** are placed around the course and may be used for calibration, detection tasks, or checkpoint-based actions. The **IR calibration corner** in the upper-right corner is specifically intended for reflectance sensor setup and calibration before or during testing.
 
@@ -154,7 +154,7 @@ This layout makes the course a full-system test of the robot’s sensing, contro
 
 # Final Robot Configuration
 
-As detailed in **HARDWARE SETUP.md**, **HARDWARE DESCRIPTION.md**, and the project **pinout diagram**, the final term project robot was assembled as a fully integrated Romi-based autonomous robot for line following and time-trial navigation. The platform used a **Pololu Romi chassis** with two independently driven wheels, wheel encoders for motion feedback, an **STM32 Nucleo-L476RG** mounted on a **Shoe of Brian**, and a front-mounted reflectance sensor array for detecting and tracking the course line.
+As detailed in **HARDWARE SETUP.md**, **HARDWARE DESCRIPTION.md**, and the project **PINOUT.xlsx**, the final term project robot was assembled as a fully integrated Romi-based autonomous robot for line following and time-trial navigation. The platform used a **Pololu Romi chassis** with two independently driven wheels, wheel encoders for motion feedback, an **STM32 Nucleo-L476RG** mounted on a **Shoe of Brian**, and a front-mounted reflectance sensor array for detecting and tracking the course line.
 
 The final hardware arrangement combined the controller stack, power system, sensor wiring, and drive hardware into a compact and testable layout. The Nucleo and interface board were mounted above the chassis, the cables were routed to the motors and encoders through the hardware stack, and the front sensor assembly was positioned to provide reliable line readings during motion. This final setup was the hardware configuration used for testing, tuning, and the final project demonstration.
 
@@ -162,21 +162,6 @@ The image below shows the completed robot assembly used in the term project.
 
 
 ![IMG_2487](https://github.com/user-attachments/assets/a105b7a0-475f-4500-81f6-4237cec445a9)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # System Architecture
@@ -591,3 +576,5 @@ The project’s biggest achievement is architectural: it turns a difficult real-
 ## Robot Performance Video
 
 The video below shows our final ME 405 Romi robot completing the project track using closed-loop line-following control. During the run, the robot uses its reflectance sensor array to detect the line and continuously adjust its motion to navigate the course autonomously.
+
+[![Watch the robot performance video](https://img.youtube.com/vi/Pn7XdVaAzuA/maxresdefault.jpg)](https://youtube.com/shorts/Pn7XdVaAzuA)
