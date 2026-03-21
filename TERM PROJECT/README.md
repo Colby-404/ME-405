@@ -221,7 +221,8 @@ Using Shares keeps communication simpler, reduces memory use, and avoids extra b
 
 The tasks work together to read sensors, compute control actions, drive the motors, handle tuning and user input, and respond to bumper-triggered recovery. Overall, the diagram represents a control system built around sharing the robot’s current state between tasks efficiently.
 
-<img width="2084" height="1324" alt="image" src="https://github.com/user-attachments/assets/44cac32c-546f-46bc-8e00-4e41d53112af" />
+<img width="2035" height="1317" alt="image" src="https://github.com/user-attachments/assets/aedb0dcd-c51a-4aa5-9ecf-f027e6f3324f" />
+
 
 # Core Files
 
