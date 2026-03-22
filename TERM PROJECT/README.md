@@ -612,6 +612,8 @@ This file provides the `task_tuning_ui` class. It reads serial commands from the
 
 It also supports a physical user-button shortcut for starting and stopping the run.
 
+<img width="1122" height="774" alt="image" src="https://github.com/user-attachments/assets/df936f88-3d10-4403-b32f-205d104bfec2" />
+
 ### Important calculations and logic
 
 This file is not a control-law file, but it is still important because it exposes the tuning values used by the controllers:
@@ -690,89 +692,6 @@ Only readings above the sensor threshold are included, which helps reduce the ef
 ### Reflection
 
 This task is the sensing front end of the line-following system. It is responsible for turning raw reflectance data into a clean line error signal that the rest of the controller can use.
-
----
-
-## `task_tuning_ui`
-
-### Purpose
-
-`task_tuning_ui` provides the main USB serial interface for tuning, calibration, debugging, and starting or stopping the robot during testing.
-
-### How it works
-
-This task runs as a user-interface state machine that listens for keyboard commands over USB serial and updates the shared control variables used by the rest of the robot.
-
-Its main operating modes are:
-
-- `CMD` for normal command entry
-- `GET_KP` and `GET_KI` for wheel PI tuning
-- `GET_SP` for changing nominal forward speed
-- `GET_LKP` and `GET_LKI` for line-follow gain tuning
-- `SENSE_STREAM` for live streaming of robot status data
-
-From the command mode, the user can:
-- print the help menu
-- start or stop the robot
-- change wheel and line-follow gains
-- set forward speed
-- arm and perform calibration
-- print a one-time status report
-- stream live debug output
-
-The task also monitors the on-board user button and uses it as a physical start/stop toggle for the robot.
-
-<img width="1122" height="774" alt="image" src="https://github.com/user-attachments/assets/df936f88-3d10-4403-b32f-205d104bfec2" />
-
-
-### Important calculations
-
-This task does not implement a control law directly, but it does set the controller parameters used by the rest of the system, including:
-
-- wheel `Kp`
-- wheel `Ki`
-- nominal forward speed `V_nom`
-- line-follow `Kp_line`
-- line-follow `Ki_line`
-
-It also reports important system values during streaming, such as:
-- current stage
-- encoder counts
-- left and right setpoints
-- line status
-- wheel gains
-- line gains
-
-### Nuances
-
-- The UI task mainly works by writing new values into shared variables used by the control tasks.
-- Calibration must be armed before white or black calibration commands are accepted.
-- The task supports both single status printing and timed live streaming.
-- The stage-name helper only includes the earlier follow-line states, so some later script states may appear as `UNKNOWN` in the output.
-- IMU-related menu options still exist in the file even though the final integrated build does not wire those shares in `main.py`.
-
-### Reflection
-
-This task was essential during development because it allowed live tuning, calibration, and debugging without constantly editing and reflashing code. It serves as the main testing interface between the user and the robot.
-
-## ui_help.py
-
-### Purpose
-
-`ui_help.py` prints the serial help menu used by the tuning UI.
-
-### How it works
-
-This file contains a helper function that writes a formatted command table to the USB serial terminal.
-
-### Nuances
-
-- It keeps the help text separate from `task_user.py`, which helps keep the main UI task cleaner.
-- The help menu still includes some IMU-related options from earlier development stages.
-
-### Reflection
-
-This is a support file, but it improves usability and makes testing faster.
 
 ---
 
