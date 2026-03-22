@@ -230,39 +230,52 @@ The tasks work together to read sensors, compute control actions, drive the moto
 
 ### Purpose
 
-`main.py` is the integration point for the entire project. It is where hardware is instantiated, shares are created, tasks are configured, and the scheduler is launched.
+`main.py` is the integration file for the full robot. It creates the hardware interfaces, instantiates the shared variables, creates the scheduled tasks, and starts the cooperative scheduler.
 
 ### How it works
 
-The file begins with deliberate `gc.collect()` calls between imports. That ordering is not cosmetic. It is a direct response to the realities of MicroPython on embedded hardware, where import-time RAM usage can become a source of random startup failures. This is one of the clearest signs that the code was tested on the actual target hardware rather than only reasoned about abstractly.
+The file begins with repeated `gc.collect()` calls between imports. This is intentional and helps reduce startup RAM problems on MicroPython.
 
-After importing modules, `main.py` creates:
+`main.py` then creates the main hardware objects:
+- USB serial interface
+- left and right motor PWM channels
+- two motor driver objects
+- two encoder objects
+- the QTR analog reflectance sensor array
+- bumper input pins
 
-* a USB serial interface for debugging and command input,
-* PWM channels on timer 4 for the left and right motors,
-* two motor driver objects,
-* two encoder objects,
-* the QTR analog sensor array,
-* bumper pin assignments,
-* many shared variables used to connect tasks.
+It also creates the shared variables used throughout the project. The final design uses mostly `Share` objects, since most tasks only need the newest available value instead of a history of past values.
 
-It also sets initial values for gains, nominal speed, enable flags, debug values, and calibration commands. Then it instantiates the motor tasks, the line-reading generator task, the line-follow task, the bumper-recovery task, and the UI task.
+The scheduled tasks created here are:
+- left motor task
+- right motor task
+- line-follow task
+- bumper-recovery task
+- tuning UI task
+- an inline `task_read_line()` generator for reading and calibrating the line sensors
 
-The scheduler configuration is also important. The bumper task is given the highest priority among the listed tasks, the line-reading and line-follow tasks are next, the motor tasks are slightly lower, and the UI is lowest
+The scheduler priorities match the control importance of the system. Bumper recovery is highest priority, line sensing and line following are next, motor tasks are below that, and the UI runs lowest.
 
-This file is centered on shared-state coordination instead of direct function calls. It also shows that wheel control, line following, and bumper recovery are treated as separate but cooperating processes.
+### Important calculations and logic
+
+The inline `task_read_line()` function computes the sensor-based line position using a weighted average:
+
+- `weighted_sum += v * (i * 1000)`
+- `pos = weighted_sum / total`
+- `line_err = pos - center`
+
+This converts the eight sensor readings into one position estimate and then into a centered line error for the outer controller.
 
 ### Nuances
 
-* The line-reading task is written directly inside `main.py` rather than being split into its own file. That makes `main.py` slightly heavier, but it also keeps all sensor-calibration behavior visible in one place.
-* The initial gains and script thresholds are not generic defaults; they are clearly tuned for a specific robot and course.
-* The `try/except` wrapper around the scheduler disables motors on exceptions and attempts limited recovery. 
+- The line-reading task is defined directly in `main.py` instead of a separate file.
+- The code creates many shares for control, debug, and scripting, including `line_err`, `line_ok`, `setpointL`, `setpointR`, `script_state`, and encoder-based count tracking shares.
+- `effortL` and `effortR` are still created as shares for debug/monitoring, even though the main control structure is centered on speed setpoints rather than raw duty commands.
+- The scheduler runs inside a `try/except` block so the motors can be disabled if an exception occurs.
 
 ### Reflection
 
-`main.py` demonstrates that our procedure was iterative and hardware-driven. The many constants for trigger counts and speeds suggest repeated track testing, followed by manual adjustment. The result captures the final integration of sensing, control, calibration, and competition-specific scripting. In the future, if given more time, it may have been ideal to use a robust state-space estimator to run the script rather than the less precise encoder ticks. 
-
-**See also:** [task_follow_line.py](#task_follow_linepy), [task_motor.py](#task_motorpy), [task_bumper_recovery.py](#task_bumper_recoverypy)
+`main.py` shows the final integrated architecture of the project. It ties together sensing, control, scripted behaviors, bumper recovery, and user tuning in one place.
 
 ---
 
@@ -270,43 +283,50 @@ This file is centered on shared-state coordination instead of direct function ca
 
 ### Purpose
 
-`task_motor.py` implements the inner wheel-speed control loop for one motor. Each wheel gets its own instance of this class.
+`task_motor.py` implements the inner wheel-speed control loop for one motor. One instance is created for the left wheel and one for the right wheel.
 
 ### How it works
 
-The task has three states:
-
-* `S0_INIT`: disable motor, zero encoder, initialize measurements
-* `S1_WAIT`: wait until the enable share turns on
-* `S2_RUN`: continuously update encoder measurements and drive the motor
+This task has three main states:
+- `S0_INIT`
+- `S1_WAIT`
+- `S2_RUN`
 
 In the run state, the task:
+1. updates the encoder
+2. reads wheel position and wheel speed
+3. writes those measurements to shares
+4. optionally resets the PI integrator
+5. computes the control effort from the speed error
+6. sends that effort to the motor driver
 
-1. updates the encoder,
-2. reads wheel velocity and position,
-3. writes those measurements to shares,
-4. optionally resets the PI integrator if commanded,
-5. computes the PI control effort from the current setpoint and measured speed,
-6. sends that effort to the motor driver.
+This structure makes the wheel controller an inner loop. Higher-level tasks do not command PWM directly. They command wheel speed setpoints, and `task_motor.py` handles the low-level correction.
 
-The PI implementation includes anti-windup by only integrating when the candidate output remains inside saturation bounds. This is a simple but effective way to avoid integral runaway.
+<img width="1276" height="321" alt="image" src="https://github.com/user-attachments/assets/76b8801e-9942-463c-adb0-62b3adaf72bd" />
 
-This task is the foundation of the robot’s motion quality. The line-follow controller does not directly force PWM values. Instead, it requests left and right wheel speeds, and `task_motor.py` tries to make the wheels achieve them. This separation means outer-loop behavior can be tuned somewhat independently of motor electrical behavior and wheel friction.
+### Important calculations
+
+The motor controller uses PI control based on encoder speed:
+
+- `error = setpoint - measured_speed`
+- `P = Kp * error`
+- `I = Ki * integral(error)`
+- `u = P + I`
+
+The code includes anti-windup behavior by only accepting the candidate integral update when the output remains inside the saturation limits.
+
+The output effort is limited to the configured saturation range before being sent to the motor driver.
 
 ### Nuances
 
-* The controller uses counts per second as the native speed unit because that is what the encoder naturally provides.
-* There is support for logging velocity and timestamps into queues, but logging is disabled gracefully if queues fill. The code prefers “stop logging” over “stop the motor,” which is the correct priority for a real-time robot.
-* On disable, the task requires zero effort and explicitly disables the motor driver, which reduces the chance of residual actuation.
-* `pi_reset_share` lets higher-level tasks clear the wheel PI integrators when scripted maneuvers or sharp transitions occur.
+- The native speed unit is counts per second, since that comes directly from the encoder update.
+- `pi_reset_share` allows higher-level tasks to clear the wheel PI integrators during scripted transitions or recovery maneuvers.
+- The task supports optional logging queues, but the final integrated robot mainly relies on shares rather than queues.
+- On disable, the task sets effort to zero and disables the motor driver.
 
 ### Reflection
 
-The procedure implied here is that wheel controllers were tuned first or at least treated as a stable inner loop before advanced line-follow behavior was layered on top. The resulting system should be more predictable because changes in the line error map to setpoint differences, not raw PWM jumps.
-
-A likely result of this design is smoother line tracking and more reproducible scripted turns. Without this inner loop, the same PWM command could produce different motion as battery voltage or floor friction changes. In the future, though, this may need to include a voltage regulator so that different batteries' power does not affect the system/script. 
-
-**See also:** [encoder.py](#encoderpy), [motor_driver.py](#motor_driverpy), [task_follow_line.py](#task_follow_linepy)
+This file is one of the most important control files in the project because it makes wheel response more repeatable and less sensitive to battery voltage or floor-condition changes.
 
 ---
 
@@ -314,40 +334,41 @@ A likely result of this design is smoother line tracking and more reproducible s
 
 ### Purpose
 
-`encoder.py` provides a hardware interface for quadrature encoders and computes both position and velocity.
+`encoder.py` provides the quadrature encoder interface and computes both accumulated position and wheel velocity.
 
 ### How it works
 
-The constructor configures a timer in encoder mode using two pins. During each `update()`, the class:
+The constructor configures a timer in encoder mode using two input pins. During each `update()`, the class:
+1. reads the current timer count
+2. computes the change since the previous reading
+3. corrects wraparound
+4. accumulates total position
+5. computes velocity from count change over elapsed time
 
-1. measures elapsed time since the previous update,
-2. reads the current timer count,
-3. computes the raw count difference,
-4. corrects wraparound using the half-period method,
-5. accumulates total position,
-6. stores the current count for next time.
+<img width="1065" height="370" alt="image" src="https://github.com/user-attachments/assets/d4da1c20-4cf0-4db4-87b4-580ad4bcdfa3" />
 
-Velocity is then computed as count delta divided by elapsed time. The class also offers convenient conversions:
+### Important calculations
 
-* scaled position/velocity,
-* radians-based position/velocity,
-* raw counts.
+The velocity calculation is based on:
 
-This class is small, but it is one of the most technically important pieces of the codebase. A wheel controller is only as good as its measurement quality. The wraparound compensation logic is what makes continuous position tracking possible, even though the hardware timer itself is bounded.
+- `delta_counts / delta_time`
+
+The wraparound correction uses the timer half-period rule so that a jump across the timer boundary is interpreted as a small forward or backward movement instead of a huge false jump.
+
+The file also supports conversions to:
+- scaled position/velocity
+- radians
+- raw counts
 
 ### Nuances
 
-* The `invert` flag allows the same logic to be used even if left and right encoder directions are mounted differently.
-* The counts-to-scaled-unit and counts-to-radian constants let the same measurement be interpreted in multiple physical units without reworking the rest of the code.
-* `zero(reset_hw_counter=False)` can either logically zero the software position or attempt to reset the hardware timer as well.
+- The `invert` flag allows the same encoder class to work even if one side is mounted in the opposite direction.
+- The class supports both logical zeroing and optional hardware-counter reset.
+- This file feeds both the wheel-speed PI controller and the encoder-count-based scripted maneuvers.
 
 ### Reflection
 
-This code reconstructs a continuous position by tracking deltas across wraparound, as it should be set up for embedded quadrature measurement.
-
-The result is a measurement layer suitable for both feedback control and motion scripting. In this project, those two uses coexist: velocity feeds the PI loop, while accumulated position enables distance-triggered transitions in the line-follow and bumper-recovery scripts.
-
-**See also:** [task_motor.py](#task_motorpy), [main.py](#mainpy)
+This file is the measurement foundation of the robot. Accurate speed and position feedback are required for both closed-loop motor control and encoder-based scripted transitions.
 
 ---
 
@@ -355,28 +376,38 @@ The result is a measurement layer suitable for both feedback control and motion 
 
 ### Purpose
 
-`motor_driver.py` is the low-level actuator interface for one motor driver channel.
+`motor_driver.py` is the low-level actuator interface for one motor channel.
 
 ### How it works
 
-The class stores the PWM object and configures two digital pins:
+The class stores the PWM object and uses two digital pins:
+- one direction pin
+- one sleep/enable pin
 
-* one for direction,
-* one for the sleep/enable line.
+`set_effort()` accepts a signed effort command, clamps it to `[-100, 100]`, sets the motor direction from the sign, and applies the corresponding PWM duty cycle.
 
-`set_effort()` clamps the requested effort to the range `[-100, 100]`. Positive effort drives one direction, negative effort flips the direction pin and uses the absolute duty cycle. `enable()` wakes the driver and zeros PWM, while `disable()` puts the driver to sleep.
+`enable()` wakes the driver and forces zero PWM.  
+`disable()` puts the driver back to sleep.
+
+<img width="2213" height="598" alt="image" src="https://github.com/user-attachments/assets/3bc7621a-5725-4a43-afff-a41b84e620f6" />
+
+### Important calculations
+
+The main control mapping is:
+
+- positive effort -> one direction
+- negative effort -> opposite direction
+- PWM duty cycle -> absolute value of effort
 
 ### Nuances
 
-* Direction is set by a digital pin rather than signed PWM.
-* The code stores the last effort command, which can be useful for debugging.
-* `enable()` sets duty to zero immediately, which reduces the chance of waking into a stale nonzero command.
+- Direction is handled by a digital pin, not signed PWM.
+- The file stores the most recent effort command for debugging.
+- The implementation is intentionally minimal so the higher-level tasks can think in terms of effort instead of pin states.
 
 ### Reflection
 
-The procedure here is to isolate hardware details so the rest of the code can think in terms of “effort” rather than pin toggles and PWM channels. The result is cleaner control code upstream. Nothing to change in this file, as it is perfectly minimal. 
-
-**See also:** [task_motor.py](#task_motorpy)
+This file cleanly isolates the hardware actuation details from the rest of the control system.
 
 ---
 
@@ -384,38 +415,47 @@ The procedure here is to isolate hardware details so the rest of the code can th
 
 ### Purpose
 
-`sensor_driver.py` implements support for the QTR-MD-08A analog reflectance sensor array.
+`sensor_driver.py` provides the driver for the QTR-MD-08A analog line sensor array.
 
 ### How it works
 
-The driver creates one ADC object per sensor pin and optionally controls an emitter pin. It stores:
+The driver creates one ADC object for each sensor channel and optionally controls the emitter pin. It stores:
+- raw readings
+- normalized readings
+- white calibration values
+- black calibration values
+- the last valid line position
 
-* raw ADC readings,
-* normalized values,
-* white calibration values,
-* black calibration values,
-* the last computed line position.
+Typical use is:
+1. read raw sensor values
+2. calibrate white and black references
+3. normalize the readings
+4. compute line position from a weighted average
+5. compute line error relative to the center of the array
 
-The typical flow is:
+<img width="2054" height="373" alt="image" src="https://github.com/user-attachments/assets/dc26d375-c73b-433e-8d90-6f55c0415964" />
 
-1. read raw values, optionally with oversampling,
-2. calibrate white and black references,
-3. normalize each channel to a `0..1000` scale,
-4. compute a weighted average position from all active sensors,
-5. derive line error relative to the center of the array.
+### Important calculations
+
+Normalization scales each sensor channel to a usable range based on white and black calibration values.
+
+Line position is computed using a weighted centroid:
+
+- `weighted_sum += reading * sensor_position`
+- `position = weighted_sum / total`
+
+Then the line error is found relative to the center of the array.
 
 ### Nuances
 
-* The code supports calibration even if white and black are acquired in the “wrong” order; `fix_calibration_order()` corrects that.
-* If calibration is not yet complete, the driver falls back to a crude normalization using ADC full scale. That is useful during bring-up and debugging.
-* `min_reading` acts as a threshold so weak sensor values do not distort the weighted centroid.
-* `read_line_position()` returns the last valid position if no line is found, which avoids abrupt nonsense outputs.
+- `fix_calibration_order()` corrects the calibration if white and black are captured in reverse order.
+- If calibration is incomplete, the driver can still fall back to a rough normalization for testing.
+- `min_reading` filters out weak values so noise does not distort the centroid.
+- If no line is found, the driver returns the last valid position instead of a meaningless jump.
 
 ### Reflection
 
-Ensuring good values from our line sensor was an issue that needed to be fixed early on. Without solid, good, and proper mounting of the line sensor, the rest of the code is pretty much useless. This, alongside having a robust state estiamtor are porbably most important foundational code for this project.
-
-**See also:** [task_follow_line.py](#task_follow_linepy), [main.py](#mainpy)
+This file is a critical sensing layer. Reliable sensor readings are necessary before any line-following control can work well.
 
 ---
 
@@ -423,51 +463,83 @@ Ensuring good values from our line sensor was an issue that needed to be fixed e
 
 ### Purpose
 
-`task_follow_line.py` is the main behavior controller. It performs line following during normal operation, handles loss-of-line behavior, schedules gain changes, and executes encoder-based scripted maneuvers for special course segments like the garage and the sharp turns. 
+`task_follow_line.py` is the main behavior and outer-loop control file. It performs normal line following, handles scripted encoder-based maneuvers, manages line-loss behavior, and coordinates special course segments.
 
 ### How it works
 
-This is the most sophisticated file in the project. Conceptually, it combines three roles:
+This file combines:
+- an outer-loop line-follow controller
+- a behavior state machine
+- an encoder-count-based course script
 
-1. **Outer-loop line controller**
-   It reads line error, applies PI/PID-style logic, and outputs differential speed commands for the wheels.
+The main states in the final version include:
+- `S0_IDLE`
+- `S1_RUN`
+- `S2_TUNE_ZONE`
+- `S3_TURN_SMALL`
+- `S4_FWD_1`
+- `S5_TURN_90`
+- `S6_FWD_2`
+- `S7_LOST_STOP`
+- `S8_SCRIPT_EXIT`
+- `S9_POST_FWD`
+- `S10_POST_TURN`
+- `S11_POST_BUMP_FOLLOW`
+- `S12_CP4_TURN_LEFT`
+- `S13_CP4_FWD`
+- `S14_FINISH_STOP`
 
-2. **Behavior state machine**
-   It tracks states such as idle, run, tune zone, lost stop, scripted turns, post-bump follow, checkpoint-4 turn, and finish stop.
+During normal operation, the task reads:
+- line error
+- line-valid flag
+- nominal forward speed
+- line-control gains
+- wheel position feedback
+- bumper override state
 
-3. **Course-progress manager**
-   It uses encoder counts to detect when the robot has reached specific regions of the course and then changes gains or behavior accordingly.
+It then writes:
+- left wheel setpoint
+- right wheel setpoint
+- debug values such as `dv_out`
+- script-state and count-tracking shares
 
-In normal follow mode, the task computes a correction `dv` from line error and then produces wheel setpoints of approximately:
+<img width="2937" height="541" alt="image" src="https://github.com/user-attachments/assets/113e31fb-35cb-4231-ba58-750002d13a56" />
 
-* `spL = v_nom - dv`
-* `spR = v_nom + dv`
 
-It clamps those setpoints to allowed bounds and writes them to the motor tasks.
+### Important calculations
 
-The file also contains logic for:
+The outer-loop control computes a differential correction `dv` from line error:
 
-* tune-zone gain scheduling,
-* scripted recovery segments triggered after certain count thresholds,
-* line-loss confirmation delays to avoid false detection,
-* post-bumper scripted motion,
-* a checkpoint-4 left turn followed by a final forward drive.
+- `error = desired_line_position - measured_line_position`
+- `P = Kp_line * error`
+- `I = Ki_line * integral(error)`
+- optional `D = Kd_line * derivative(error)`
+- `dv = P + I (+ D if enabled)`
 
-This file is effectively what runs our term project. The code intentionally switches to scripted motion in places where a known course segment may be easier to traverse by encoder counts than by continuously interpreting sensor data.
+That correction is converted into wheel setpoints:
+
+- `spL = v_nom - dv`
+- `spR = v_nom + dv`
+
+A small forward trim is also included to compensate for consistent drivetrain bias:
+
+- `spL = fwd_speed - fwd_trim`
+- `spR = fwd_speed + fwd_trim`
+
+The file also tracks average encoder counts from the start of the run and from the start of each scripted segment in order to trigger maneuvers at repeatable physical locations.
 
 ### Nuances
 
-* The task has many optional features, including derivative action, dynamic saturation, centroid logging, alternative sensor modes, yaw-based straightening, and gain scheduling. Not all are used in `main.py`, but their presence shows the file evolved through experimentation.
-* There is a small `fwd_trim` bias that intentionally slows one side and speeds the other during straight motion. That compensates for systematic drift.
-* The line-loss logic uses confirmation times rather than immediately declaring failure. This is critical because sensor dropouts may occur momentarily during transitions.
-* The task resets the wheel PI integrator at certain scripted transitions, which prevents old control history from contaminating a new maneuver.
-* `motion_override` provides a clean handshake with the bumper task so two high-level tasks do not fight over wheel setpoints.
+- This file contains the most advanced control logic in the project.
+- It supports both normal sensor-based following and encoder-based scripted segments.
+- It includes line-loss confirmation timing so the robot does not falsely stop on brief sensor dropouts.
+- The task can reset the wheel PI integrators during scripted transitions.
+- `motion_override` prevents this task from fighting the bumper-recovery task for control of the wheel commands.
+- The final code includes more states than the helper stage-name map in `task_user.py`, so some late-stage codes can appear as `UNKNOWN` in streamed UI output.
 
 ### Reflection
 
-This file was the most important and worked on file of our project. The current code works reliably, but ideally, the encoder values for the script could always be further improved.
-
-**See also:** [sensor_driver.py](#sensor_driverpy), [task_bumper_recovery.py](#task_bumper_recoverypy), [main.py](#mainpy)
+This file is the main behavior controller of the project and contains the final track-specific logic that made the full run possible.
 
 ---
 
@@ -475,45 +547,48 @@ This file was the most important and worked on file of our project. The current 
 
 ### Purpose
 
-`task_bumper_recovery.py` monitors six bumper sensors and temporarily takes control of the robot when contact is detected.
+`task_bumper_recovery.py` monitors the bumper switches and temporarily overrides normal line-following when the robot collides with an obstacle.
 
 ### How it works
 
-The class implements a state machine:
-
-* idle
-* debounce
-* brake
-* reverse
-* turn left
-* resume delay
-* wait release
+This file implements a recovery state machine with the states:
+- `S0_IDLE`
+- `S1_DEBOUNCE`
+- `S2_BRAKE`
+- `S3_REVERSE`
+- `S4_TURN_LEFT`
+- `S5_RESUME_DELAY`
+- `S6_WAIT_RELEASE`
 
 When a bumper hit is confirmed, the task:
+1. turns on motion override
+2. disables line-follow temporarily
+3. commands a stop
+4. resets the wheel PI integrators
+5. reverses for a set encoder count
+6. pivots left for a set encoder count
+7. waits briefly
+8. re-enables line following
+9. waits for bumper release and rearm timing
 
-1. turns on motion override,
-2. disables line follow,
-3. keeps wheel tasks enabled,
-4. commands a stop,
-5. resets wheel PI,
-6. reverses for a specified number of encoder ticks,
-7. pivots left for a specified number of ticks,
-8. re-enables line follow after a short delay,
-9. waits for bumper release and rearm timing.
+<img width="2773" height="209" alt="image" src="https://github.com/user-attachments/assets/d2cc9269-2a85-4337-a4a9-faffab6fb062" />
 
-This task protects the robot from staying stuck after contact. More importantly, it is architected so that bumper recovery is not a separate, disconnected emergency script. It is integrated into the rest of the control stack through shared variables and override logic.
+
+### Important calculations
+
+The recovery distances are measured using encoder counts, not just time. The task computes average segment counts from left and right wheel positions and compares them to the configured reverse and turn thresholds.
+
+This makes the recovery behavior more repeatable across battery conditions and floor conditions.
 
 ### Nuances
 
-* Debouncing, release confirmation, and rearm delay are all included. That reduces repeated triggers and noisy transitions.
-* Recovery distances are measured in encoder ticks, which makes them more repeatable than open-loop timing alone.
-* The task does not disable the wheel-control architecture; it simply changes setpoints and uses override ownership.
+- The task includes debounce timing, release confirmation, and rearm delay.
+- It keeps the wheel-control structure active and overrides setpoints rather than bypassing the control system completely.
+- The task uses the `motion_override` share so only one high-level task owns the wheel commands at a time.
 
 ### Reflection
 
-The complete bump sensor array was probably the most worthwhile purchase for our robot. As seen in our physical demonstrations, the bump sensor recovery task saved our robot from getting stuck in the garage. We would highly recommend complete bump sensors for anyone else attempting this lab, as this autonomy helped to save our robot when the script failed. 
-
-**See also:** [task_follow_line.py](#task_follow_linepy), [main.py](#mainpy)
+This file is very important to the overall robustness of the project because it lets the robot recover instead of getting permanently stuck after contact.
 
 ---
 
@@ -521,36 +596,49 @@ The complete bump sensor array was probably the most worthwhile purchase for our
 
 ### Purpose
 
-`task_user.py` implements the serial and button-based tuning interface.
+`task_user.py` implements the USB serial tuning and monitoring interface for the robot.
 
 ### How it works
 
-This task listens for USB serial commands and optionally for the on-board user button. It can:
+This file provides the `task_tuning_ui` class. It reads serial commands from the user and can:
+- print the help menu
+- set wheel gains
+- set nominal speed
+- set line-follow gains
+- arm and execute calibration
+- start and stop the robot
+- stream diagnostic information
 
-* print help,
-* set wheel gains,
-* set nominal speed,
-* set line-follow gains,
-* arm and execute sensor calibration,
-* start and stop robot motion,
-* print status,
-* stream diagnostic data,
-* toggle some IMU-related settings if those shares exist.
+It also supports a physical user-button shortcut for starting and stopping the run.
 
-The class is designed as a stateful UI task. Instead of reading one full command line, it often transitions through mini-modes such as `GET_KP`, `GET_KI`, `GET_SP`, and `SENSE_STREAM`.
+### Important calculations and logic
+
+This file is not a control-law file, but it is still important because it exposes the tuning values used by the controllers:
+- wheel `Kp` and `Ki`
+- line-follow `Kp_line` and `Ki_line`
+- nominal speed
+- calibration commands
+- run/stop enables
+
+The streaming mode also reads and reports current values such as:
+- encoder positions
+- encoder speeds
+- line status
+- wheel setpoints
+- script stage
+- total counts
+- segment counts
 
 ### Nuances
 
-* Calibration is intentionally “armed” before white/black calibration commands are accepted. That reduces accidental miscalibration.
-* The button can start and stop the run directly, which is convenient during physical tests.
-* Streaming mode prints line-follow stage, counts, setpoints, gains, and line status. This is extremely helpful for matching observed robot behavior to internal state-machine transitions.
-* IMU commands exist even though the present `main.py` does not appear to wire in IMU shares. That suggests the UI code was written to support expansion.
+- Calibration must first be armed before white or black calibration is accepted.
+- The task uses mini-modes such as command mode, numeric entry, and stream mode rather than only single-character immediate actions.
+- The button behavior is mainly used as a convenient physical run/stop interface.
+- IMU-related options still appear in the UI even though the final `main.py` does not wire in IMU shares.
 
 ### Reflection
 
-This file reflects how we repeatedly tuned Kp, Ki, line gains, nominal speed, and calibration values while observing streamed telemetry. While a lot of the inputs were left over from previous labs as extra functions, the calibration and debugging capabilities of the UI were extremely useful when figuring out the precise encoder ticks needed for our script. 
-
-**See also:** [ui_help.py](#ui_helppy), [main.py](#mainpy)
+This file was very useful during physical testing because it allowed repeated tuning and live debugging without constantly rewriting code.
 
 ---
 
@@ -558,43 +646,91 @@ This file reflects how we repeatedly tuned Kp, Ki, line gains, nominal speed, an
 
 ### Purpose
 
-`ui_help.py` prints the command menu shown over USB serial.
+`ui_help.py` prints the serial help menu used by the tuning UI.
 
 ### How it works
 
-This file contains a single helper function that writes a formatted help table to the serial interface. It is kept separate from the task user in order to minimize file size. 
+This file contains a helper function that writes a formatted command table to the USB serial terminal.
 
 ### Nuances
 
-* The menu includes IMU-related options, even though the current integration may not use them.
-* A short delay is added after printing, likely to help ensure serial output completes cleanly.
+- It keeps the help text separate from `task_user.py`, which helps keep the main UI task cleaner.
+- The help menu still includes some IMU-related options from earlier development stages.
 
 ### Reflection
 
-This is a support file rather than a control file, but it still contributes to usability. 
-
-**See also:** [task_user.py](#task_userpy)
-
----
-
-## Provided Infrastructure Files
-
-## cotask.py
-
-This file, provided by Dr. John Ridgely, implements the cooperative multitasking framework. It defines the `Task` abstraction, readiness logic, optional profiling/trace support, and the scheduler that runs tasks by priority or round-robin. In this project, it is the backbone that allows line following, bumper recovery, wheel control, and the UI to coexist without preemptive threading.
-
-**See also:** [main.py](#mainpy)
+This is a support file, but it improves usability and makes testing faster.
 
 ---
 
 ## task_share.py
 
-This file, also provided by Dr. John Ridgely, implements safe shared variables and queues for inter-task communication. In this project, it is used extensively for gains, setpoints, measured wheel velocities, positions, enable flags, line errors, calibration commands, and debug values.
+### Purpose
 
-**See also:** [main.py](#mainpy), [task_motor.py](#task_motorpy), [task_follow_line.py](#task_follow_linepy)
+`task_share.py` provides the inter-task communication objects used throughout the project.
 
-The project’s biggest achievement is architectural: it turns a difficult real-world robot task into manageable layers. Its second biggest achievement is procedural: it preserves evidence of iterative testing and course-specific refinement. Those qualities matter because in robotics, the best code is rarely the shortest or most abstract. It is the code that works repeatedly on the real machine, under imperfect conditions, and still remains understandable enough to improve.
+### How it works
 
+This file defines the shared-data infrastructure used by the scheduler:
+- `BaseShare`
+- `Queue`
+- `Share`
+
+These classes allow one task to safely pass data to another without direct function calls.
+
+In the final robot, most communication uses `Share` objects. This matches the structure of the controller, since most tasks only need the newest available value, not a buffered history of older values.
+
+### Important calculations and logic
+
+`Queue` objects use a ring-buffer structure with read and write indices.  
+`Share` objects store a single current value.
+
+This distinction is important:
+- use a `Share` when only the latest value matters
+- use a `Queue` when ordered history must be preserved
+
+### Nuances
+
+- The file includes optional interrupt protection for safer updates.
+- It is a foundational support file even though it does not directly implement robot behavior.
+- The final design choice to rely mostly on shares helps reduce memory use and simplifies real-time control.
+
+### Reflection
+
+This file is important because it defines how the whole multitasking system exchanges data.
+
+---
+
+## cotask.py
+
+### Purpose
+
+`cotask.py` provides the cooperative multitasking scheduler used by the project.
+
+### How it works
+
+The main class in this file is `Task`. Each scheduled task is created from a generator function, assigned a priority and period, and then managed by the scheduler.
+
+The scheduler repeatedly checks which tasks are ready to run and then advances the appropriate generator.
+
+### Important calculations and logic
+
+A task is considered ready based on timing and scheduling rules:
+- its period has elapsed
+- it is allowed to run
+- it has not completed
+
+This allows the robot to run multiple control and interface tasks in a predictable cooperative structure without preemption.
+
+### Nuances
+
+- This file is the reason the project can separate sensing, wheel control, user interaction, line following, and bumper recovery into different tasks.
+- It also supports profiling and transition tracing features.
+- Like `task_share.py`, this is a framework file rather than a robot-specific behavior file, but it is still essential to the final system.
+
+### Reflection
+
+This file is the scheduling backbone of the project and makes the entire multitasking architecture possible.
 
 ## Robot Performance Video
 
