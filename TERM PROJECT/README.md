@@ -642,6 +642,116 @@ The streaming mode also reads and reports current values such as:
 This file was very useful during physical testing because it allowed repeated tuning and live debugging without constantly rewriting code.
 
 ---
+## `task_read_line`
+
+### Purpose
+
+`task_read_line` is the line-sensor task used by the robot to read the QTR reflectance array, handle calibration commands, and compute the current line-tracking error.
+
+### How it works
+
+This task is implemented as an inline generator in `main.py` rather than as its own separate file. It runs continuously and performs three main jobs:
+
+- checks whether a calibration command has been requested
+- reads and normalizes the sensor values
+- computes the line position and line error
+
+When calibration is requested, the task can perform either white or black calibration, store the updated calibration values, and then mark the calibration step as complete.
+
+During normal operation, the task reads the normalized sensor values and uses a weighted average to estimate the line position across the array. That position is then shifted relative to the center of the sensor array to produce `line_err`, which is used by the outer line-following controller.
+
+If the line is temporarily lost, the task keeps the most recent valid error value and sets `line_ok = 0` so the rest of the system knows the line is not currently being detected.
+
+![task_read_line state diagram](images/state_task_read_line.png)
+
+### Important calculations
+
+The task computes the line position using a weighted centroid of the normalized sensor readings:
+
+- `weighted_sum += v * (i * 1000)`
+- `total += v`
+- `pos = weighted_sum // total`
+
+The line error is then found by subtracting the center of the array:
+
+- `center = (qtr.count - 1) * 1000 // 2`
+- `line_err = pos - center`
+
+Only readings above the sensor threshold are included, which helps reduce the effect of noise.
+
+### Nuances
+
+- This task is defined inside `main.py`, so it may not appear as its own file in the repo.
+- It uses the most recent valid line error when the line is lost, rather than forcing the error to zero.
+- It publishes both `line_err` and `line_ok`, so the controller can tell the difference between a valid reading and a lost-line condition.
+- It also handles calibration through the shared variables `cal_cmd` and `cal_done`.
+
+### Reflection
+
+This task is the sensing front end of the line-following system. It is responsible for turning raw reflectance data into a clean line error signal that the rest of the controller can use.
+
+---
+
+## `task_tuning_ui`
+
+### Purpose
+
+`task_tuning_ui` provides the main USB serial interface for tuning, calibration, debugging, and starting or stopping the robot during testing.
+
+### How it works
+
+This task runs as a user-interface state machine that listens for keyboard commands over USB serial and updates the shared control variables used by the rest of the robot.
+
+Its main operating modes are:
+
+- `CMD` for normal command entry
+- `GET_KP` and `GET_KI` for wheel PI tuning
+- `GET_SP` for changing nominal forward speed
+- `GET_LKP` and `GET_LKI` for line-follow gain tuning
+- `SENSE_STREAM` for live streaming of robot status data
+
+From the command mode, the user can:
+- print the help menu
+- start or stop the robot
+- change wheel and line-follow gains
+- set forward speed
+- arm and perform calibration
+- print a one-time status report
+- stream live debug output
+
+The task also monitors the on-board user button and uses it as a physical start/stop toggle for the robot.
+
+![task_tuning_ui state diagram](images/state_task_tuning_ui.png)
+
+### Important calculations
+
+This task does not implement a control law directly, but it does set the controller parameters used by the rest of the system, including:
+
+- wheel `Kp`
+- wheel `Ki`
+- nominal forward speed `V_nom`
+- line-follow `Kp_line`
+- line-follow `Ki_line`
+
+It also reports important system values during streaming, such as:
+- current stage
+- encoder counts
+- left and right setpoints
+- line status
+- wheel gains
+- line gains
+
+### Nuances
+
+- The UI task mainly works by writing new values into shared variables used by the control tasks.
+- Calibration must be armed before white or black calibration commands are accepted.
+- The task supports both single status printing and timed live streaming.
+- The stage-name helper only includes the earlier follow-line states, so some later script states may appear as `UNKNOWN` in the output.
+- IMU-related menu options still exist in the file even though the final integrated build does not wire those shares in `main.py`.
+
+### Reflection
+
+This task was essential during development because it allowed live tuning, calibration, and debugging without constantly editing and reflashing code. It serves as the main testing interface between the user and the robot.
 
 ## ui_help.py
 
