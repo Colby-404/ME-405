@@ -302,6 +302,9 @@ In the run state, the task:
 
 This structure makes the wheel controller an inner loop. Higher-level tasks do not command PWM directly. They command wheel speed setpoints, and `task_motor.py` handles the low-level correction.
 
+<img width="981" height="246" alt="image" src="https://github.com/user-attachments/assets/c849bd0b-69b9-4377-8f2c-ea4b69791164" />
+
+
 ### Important calculations
 
 The motor controller uses PI control based on encoder speed:
