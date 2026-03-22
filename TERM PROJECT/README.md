@@ -662,7 +662,8 @@ During normal operation, the task reads the normalized sensor values and uses a 
 
 If the line is temporarily lost, the task keeps the most recent valid error value and sets `line_ok = 0` so the rest of the system knows the line is not currently being detected.
 
-![task_read_line state diagram](images/state_task_read_line.png)
+<img width="1237" height="593" alt="image" src="https://github.com/user-attachments/assets/bd0dde03-96a4-4c2e-9c65-9b0591dfba0c" />
+
 
 ### Important calculations
 
@@ -721,7 +722,8 @@ From the command mode, the user can:
 
 The task also monitors the on-board user button and uses it as a physical start/stop toggle for the robot.
 
-![task_tuning_ui state diagram](images/state_task_tuning_ui.png)
+<img width="1122" height="774" alt="image" src="https://github.com/user-attachments/assets/df936f88-3d10-4403-b32f-205d104bfec2" />
+
 
 ### Important calculations
 
