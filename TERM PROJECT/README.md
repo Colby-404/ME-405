@@ -764,7 +764,7 @@ This allows the robot to run multiple control and interface tasks in a predictab
 
 This file is the scheduling backbone of the project and makes the entire multitasking architecture possible.
 
-## Robot Performance Video
+# Robot Performance Video
 
 The video below shows our final ME 405 Romi robot completing the project track using closed-loop line-following control. During the run, the robot uses its reflectance sensor array to detect the line and continuously adjust its motion to navigate the course autonomously.
 
