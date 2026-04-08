@@ -29,7 +29,7 @@ This repository contains coursework, lab files, support code, and term project m
   Support files, reference code, and configuration material used across the labs and project.
 
 - **TERM PROJECT**  
-  Main files for the final term project, including code, documentation, and hardware integration work.
+  Core materials for the final term project: a mobile robot designed to reliably follow a printed line track during an in-class time-trial demonstration, including all code, documentation, and hardware integration..
 
 ## Top-Level Files
 
